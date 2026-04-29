@@ -77,96 +77,9 @@ class WatermarkDetector(Protocol):
         ...
 
 # --- Detectors ---
-
 class DWTDCTDetector:
     scheme_id = "dwt_dct"
-    detector_name = "invisible-watermark (DWT-DCT bytes)"
-
-    def detect(self, image_path: Path, expected_payload: Optional[str] = None, payload_bit_lengths: Optional[List[int]] = None) -> WatermarkDetectionResult:
-        if not IMWATERMARK_AVAILABLE or not OPENCV_AVAILABLE:
-            return WatermarkDetectionResult(
-                scheme_id=self.scheme_id,
-                detector_name=self.detector_name,
-                attempted=False,
-                detected=False,
-                payload_valid=False,
-                status="unsupported_missing_dependencies",
-                notes="invisible-watermark or opencv-python not installed.",
-            )
-
-        if payload_bit_lengths is None:
-            payload_bit_lengths = [32, 64, 128, 256]
-
-        try:
-            bgr_img = cv2.imread(str(image_path))
-            if bgr_img is None:
-                raise ValueError("OpenCV failed to read the image.")
-            
-            for bit_length in payload_bit_lengths:
-                decoder = WatermarkDecoder('bytes', bit_length)
-                decoded_bytes = decoder.decode(bgr_img, 'dwtDct')
-                
-                if decoded_bytes:
-                    try:
-                        decoded_str = decoded_bytes.decode('utf-8', errors='ignore').strip('\x00')
-                    except Exception:
-                        decoded_str = str(decoded_bytes)
-                    
-                    if expected_payload is not None:
-                        if expected_payload in decoded_str or decoded_str == expected_payload:
-                            return WatermarkDetectionResult(
-                                scheme_id=self.scheme_id,
-                                detector_name=self.detector_name,
-                                attempted=True,
-                                detected=True,
-                                confidence=1.0,
-                                decoded_payload=decoded_str,
-                                payload_valid=True,
-                                status="expected_payload_matched",
-                                notes=f"Successfully decoded and matched expected payload at {bit_length} bits."
-                            )
-                        else:
-                            continue
-                    else:
-                        return WatermarkDetectionResult(
-                            scheme_id=self.scheme_id,
-                            detector_name=self.detector_name,
-                            attempted=True,
-                            detected=False,
-                            decoded_payload=decoded_str,
-                            payload_valid=False,
-                            status="empty_or_unreadable_payload",
-                            notes=f"Decoded payload at {bit_length} bits, but no expected payload provided to verify validity."
-                        )
-
-            return WatermarkDetectionResult(
-                scheme_id=self.scheme_id,
-                detector_name=self.detector_name,
-                attempted=True,
-                detected=False,
-                confidence=0.0,
-                payload_valid=False,
-                status="no_detectable_evidence",
-                notes="Attempted all specified bit lengths. No valid payload found or decoded."
-            )
-
-        except Exception as e:
-            return WatermarkDetectionResult(
-                scheme_id=self.scheme_id,
-                detector_name=self.detector_name,
-                attempted=True,
-                detected=False,
-                confidence=0.0,
-                payload_valid=False,
-                status="decoder_failed",
-                notes="An exception occurred during decoding.",
-                error=str(e)
-            )
-
-
-class ImageDWTDCTDetector:
-    scheme_id = "image_dwt_dct"
-    detector_name = "Image Watermark (DWT-DCT array)"
+    detector_name = "DWT-DCT (array) watermarking"
 
     def detect(self, image_path: Path, expected_payload: Optional[str] = None, **kwargs) -> WatermarkDetectionResult:
         if not PYWT_SCIPY_AVAILABLE or not OPENCV_AVAILABLE:
@@ -287,7 +200,7 @@ def analyse_watermarks(
         except Exception:
             loadable = False
 
-    detectors = [DWTDCTDetector(), ImageDWTDCTDetector()]
+    detectors = [DWTDCTDetector()]
     implemented_schemes = [d.scheme_id for d in detectors]
     results = []
 
