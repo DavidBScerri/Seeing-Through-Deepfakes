@@ -1,4 +1,6 @@
-#.venv/bin/pip install -r requirements.txt
+#source .venv/bin/activate
+#pip install -r requirements.txt
+
 
 pydantic>=2.0.0
 invisible-watermark
@@ -7,3 +9,12 @@ pillow
 numpy
 PyWavelets
 scipy
+torch 
+torchvision
+huggingface_hub
+datasets
+scikit-learn
+tqdm
+ipykernel
+ipywidgets
+transformers
