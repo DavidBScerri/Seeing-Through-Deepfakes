@@ -1,3 +1,4 @@
+import os
 import torch
 from transformers import AutoImageProcessor, AutoModelForImageClassification, TrainingArguments, Trainer
 from datasets import load_dataset
@@ -9,7 +10,8 @@ class DeepfakeClassifier:
     def __init__(self,
                  face_model_name="prithivMLmods/deepfake-detector-model-v1",
                  scene_model_name="birder-project/rope_vit_reg4_b14_capi-places365",
-                 landmark_model_path="./fine_tuned_model"):
+                 landmark_model_path="./fine_tuned_model",
+                 landmark_delta_path=None):
         """
         Initializes the Deepfake Classifier with multiple sub-models:
           - A FaceForensics model for face manipulation detection.
@@ -22,6 +24,11 @@ class DeepfakeClassifier:
             landmark_model_path:  Local path (or HF model ID) for the fine-tuned DINOv2
                                   landmark model. Defaults to ``./fine_tuned_model``.
                                   Pass ``None`` to skip loading the landmark model.
+            landmark_delta_path:  Optional path to a .pt delta file produced by
+                                  save_weight_delta(). When provided, the base DINOv2
+                                  model is loaded and the stored weight differences are
+                                  applied on top, avoiding the need to store a full
+                                  model file in the repository.
         """
         self.device = torch.device(
             "mps" if torch.backends.mps.is_available()
@@ -60,14 +67,21 @@ class DeepfakeClassifier:
 
         # ── 3. Landmark Detection Model (fine-tuned DINOv2) ──────────────────
         self.landmark_model_path = landmark_model_path
-        if landmark_model_path:
+        self.landmark_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+
+        if landmark_delta_path is not None:
+            # Delta mode: load base model + apply weight delta
+            print(f"Loading DINOv2 base model and applying landmark delta from: {landmark_delta_path}")
+            self.landmark_model = AutoModelForImageClassification.from_pretrained("facebook/dinov2-base").to(self.device)
+            load_weight_delta(self.landmark_model, landmark_delta_path, device=self.device)
+            print("Landmark delta applied successfully.")
+            self.landmark_model.eval()
+        elif landmark_model_path:
             print(f"Loading fine-tuned Landmark model from: {landmark_model_path}")
-            self.landmark_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
             self.landmark_model = AutoModelForImageClassification.from_pretrained(landmark_model_path).to(self.device)
             self.landmark_model.eval()
         else:
             print("Landmark model path not provided. Skipping landmark model loading.")
-            self.landmark_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
             self.landmark_model = None
 
     # ── Inference helpers ────────────────────────────────────────────────────
@@ -207,17 +221,125 @@ class DeepfakeClassifier:
         return results
 
 
-# ── Training utilities ───────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Weight-delta helpers
+# ---------------------------------------------------------------------------
+
+def save_weight_delta(
+    fine_tuned_model,
+    base_model_name="facebook/dinov2-base",
+    output_path="./fine_tuned_model_delta/weight_delta.pt",
+    threshold: float = 1e-9,
+):
+    """
+    Saves weight differences between the fine-tuned model and the base model
+    using per-tensor int8 quantisation.
+
+    Encoding:
+        For each parameter tensor whose L∞ change exceeds `threshold`:
+            scale  = max_abs_diff / 127.0
+            stored = round(diff / scale).clamp(-127, 127)  [int8]
+        Reconstruction (done in load_weight_delta):
+            diff   ≈ stored.float() * scale
+
+    Args:
+        fine_tuned_model: The trained model object (in memory after fine_tune_model()).
+        base_model_name:  HuggingFace model ID of the base model used for training.
+        output_path:      Where to write the .pt delta file.
+        threshold:        Tensors whose L∞ change is below this are skipped (pure zeros).
+    Returns:
+        (output_path, size_mb)
+    """
+    print(f"Loading base model '{base_model_name}' to compute delta...")
+    base_model = AutoModelForImageClassification.from_pretrained(base_model_name)
+    base_state = base_model.state_dict()
+    ft_state   = fine_tuned_model.state_dict()
+
+    delta     = {}
+    unchanged = []
+    for key in ft_state:
+        ft_param   = ft_state[key].float()
+        base_param = base_state[key].float() if key in base_state else torch.zeros_like(ft_param)
+        diff       = ft_param - base_param
+        max_abs    = diff.abs().max().item()
+        if max_abs < threshold:
+            unchanged.append(key)
+            continue
+        # Per-tensor int8 quantisation — 4× smaller than float32, 2× smaller than float16
+        scale = max_abs / 127.0
+        quant = (diff / scale).round().clamp(-127, 127).to(torch.int8)
+        delta[key] = {"q": quant, "s": scale}
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    torch.save(
+        {"base_model": base_model_name, "dtype": "int8", "delta": delta},
+        output_path,
+    )
+
+    size_mb = os.path.getsize(output_path) / 1024 / 1024
+    print(f"Delta saved → '{output_path}'")
+    print(f"  Changed parameters : {len(delta)}")
+    print(f"  Unchanged (skipped): {len(unchanged)}")
+    print(f"  File size          : {size_mb:.2f} MB")
+    return output_path, size_mb
+
+
+def load_weight_delta(model, delta_path, device=None):
+    """
+    Applies a weight delta (produced by save_weight_delta) to an already-loaded
+    base model, modifying it in-place.
+
+    Supports both the int8-quantised format ({"q": int8_tensor, "s": scale})
+    and the legacy float16 format (raw half-precision tensor) for backwards
+    compatibility.
+
+    Args:
+        model:      The base model instance — weights are updated in-place.
+        delta_path: Path to the .pt file created by save_weight_delta().
+        device:     torch.device to map tensors onto (defaults to CPU).
+    """
+    checkpoint = torch.load(delta_path, map_location=device or "cpu", weights_only=False)
+    delta      = checkpoint["delta"]
+    fmt        = checkpoint.get("dtype", "float16")
+    state      = model.state_dict()
+
+    for key, payload in delta.items():
+        if key not in state:
+            continue
+        if fmt == "int8" and isinstance(payload, dict):
+            # Dequantise: diff ≈ q * scale
+            diff = payload["q"].float() * payload["s"]
+        else:
+            # Legacy float16 delta
+            diff = payload.float()
+        state[key] = (state[key].float() + diff).to(state[key].dtype)
+
+    model.load_state_dict(state)
+
+
+# ---------------------------------------------------------------------------
+# Training helpers
+# ---------------------------------------------------------------------------
 
 def compute_metrics(eval_pred):
     """
-    Computes top-1 accuracy for the DINOv2 landmark fine-tuning task.
-    Compatible with the HuggingFace Trainer ``compute_metrics`` API.
+    Computes accuracy, precision, recall, and F1 for the DINOv2 landmark
+    fine-tuning task. Compatible with the HuggingFace Trainer
+    ``compute_metrics`` API.
     """
+    from sklearn.metrics import accuracy_score, precision_recall_fscore_support
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
-    accuracy = (predictions == labels).astype(np.float32).mean().item()
-    return {"accuracy": accuracy}
+
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='weighted')
+    acc = accuracy_score(labels, predictions)
+
+    return {
+        'accuracy': acc,
+        'f1': f1,
+        'precision': precision,
+        'recall': recall
+    }
 
 
 def fine_tune_model(
@@ -259,14 +381,16 @@ def fine_tune_model(
 
     # Build train/eval splits
     if "test" in dataset:
-        train_ds = dataset["train"].with_transform(transforms)
-        eval_ds = dataset["test"].with_transform(transforms)
+        train_ds = dataset["train"]
+        eval_ds = dataset["test"]
     else:
         split = dataset["train"].train_test_split(test_size=0.1)
-        train_ds = split["train"].with_transform(transforms)
-        eval_ds = split["test"].with_transform(transforms)
+        train_ds = split["train"]
+        eval_ds = split["test"]
 
     print("Applying transformations...")
+    train_ds.set_transform(transforms)
+    eval_ds.set_transform(transforms)
 
     model = AutoModelForImageClassification.from_pretrained(
         base_model_name,
@@ -283,8 +407,10 @@ def fine_tune_model(
         save_strategy="epoch",
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=4,
         per_device_eval_batch_size=batch_size,
         num_train_epochs=epochs,
+        warmup_steps=0.1,
         logging_steps=10,
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
