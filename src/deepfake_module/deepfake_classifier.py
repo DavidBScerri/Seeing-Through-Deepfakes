@@ -12,19 +12,17 @@ from facenet_pytorch import MTCNN
 
 class DeepfakeClassifier:
     def __init__(self,
-                 face_model_name="prithivMLmods/deepfake-detector-model-v1",
                  scene_model_name="birder-project/rope_vit_reg4_b14_capi-places365",
                  landmark_model_name="facebook/dinov2-base",
                  index_path="models/landmarks_index.faiss",
                  metadata_path="models/landmarks_metadata.json"):
         """
         Initializes the Deepfake Classifier with multiple sub-models:
-          - A FaceForensics model for face manipulation detection.
+          - MTCNN for face detection.
           - A Places365 scene model via the birder library.
           - A fine-tuned DINOv2 model for landmark-based analysis.
 
         Args:
-            face_model_name:      HuggingFace model ID for the face forensics detector.
             scene_model_name:     Birder model name for scene/Places365 classification.
             landmark_model_name:  HuggingFace model ID for the landmark embedding model (e.g. DINOv2).
             index_path:           Path to the FAISS index file.
@@ -36,20 +34,9 @@ class DeepfakeClassifier:
             else "cpu"
         )
 
-        # ── 1. Face Forensics Model ──────────────────────────────────────────
-        print(f"Loading Face Forensics model: {face_model_name}")
+        # ── 1. Face Detection Model ──────────────────────────────────────────
+        print("Loading Face Detection model: MTCNN")
         self.mtcnn = MTCNN(keep_all=True, device='cpu')
-        try:
-            self.face_processor = AutoImageProcessor.from_pretrained(face_model_name)
-        except Exception:
-            print(
-                f"Warning: Could not load processor for {face_model_name}. "
-                "Falling back to google/vit-base-patch16-224."
-            )
-            self.face_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224")
-
-        self.face_model = AutoModelForImageClassification.from_pretrained(face_model_name).to(self.device)
-        self.face_model.eval()
 
         # ── 2. Scene Classification Model (Places365 via birder) ─────────────
         print(f"Loading Scene model: {scene_model_name}")
@@ -79,32 +66,24 @@ class DeepfakeClassifier:
 
     def predict_face(self, image):
         """
-        Detects whether the face in the image has been manipulated.
+        Detects whether a face is present in the image.
 
         Args:
             image: A PIL Image object.
 
         Returns:
-            dict with keys ``label``, ``confidence``, ``probs``, and ``face_certainty``.
+            dict with keys ``label``, and ``confidence`` (face certainty).
         """
-        # Detect face first using MTCNN
+        # Detect face using MTCNN
         boxes, probs = self.mtcnn.detect(image)
         if boxes is None or len(boxes) == 0:
-            return {"label": "No Face", "confidence": 0.0, "probs": [0.0, 0.0], "face_certainty": 0.0}
+            return {"label": "No Face", "confidence": 0.0}
         
         face_certainty = float(np.max(probs))
         if face_certainty < 0.90:
-            return {"label": "No Face", "confidence": 0.0, "probs": [0.0, 0.0], "face_certainty": round(face_certainty, 4)}
+            return {"label": "No Face", "confidence": round(face_certainty, 4)}
 
-        # Run face model if face detected with high certainty
-        inputs = self.face_processor(images=image, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            outputs = self.face_model(**inputs)
-            probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-
-        max_prob, idx = torch.max(probs, dim=-1)
-        label = self.face_model.config.id2label[idx.item()]
-        return {"label": label, "confidence": round(max_prob.item(), 4), "probs": probs[0].tolist(), "face_certainty": round(face_certainty, 4)}
+        return {"label": "Face Detected", "confidence": round(face_certainty, 4)}
 
     def predict_scene(self, image):
         """
@@ -190,29 +169,23 @@ class DeepfakeClassifier:
             scene_res = self.predict_scene(image)
             landmark_res = self.predict_landmark(image)
 
-            face_fake_score = 0.0
-            if face_res["label"].lower() == "fake":
-                face_fake_score = face_res["confidence"]
-            elif face_res["label"].lower() == "real":
-                face_fake_score = 1.0 - face_res["confidence"]
-            
-            landmark_score = landmark_res.get("confidence", 0.0)
-            
-            final_prediction_score = max(face_fake_score, landmark_score)
+            has_face = face_res["confidence"] >= 0.90
+            # A landmark is considered present if its label is not Unknown/None and confidence is above a threshold
+            has_landmark = landmark_res["label"] not in ["Unknown", "None", "N/A"] and landmark_res.get("confidence", 0.0) >= 0.50
 
             results["deepfake_analysis"] = {
+                "has_face": has_face,
+                "has_place": has_landmark,
                 "face_analysis": face_res,
                 "scene_analysis": scene_res,
                 "landmark_analysis": landmark_res
             }
-            results["final_prediction_score"] = round(final_prediction_score, 4)
             results["final_decision"] = (
-                "High possibility of being a deepfake"
-                if final_prediction_score > 0.5
-                else "Likely AI Generated (Non-Deepfake)"
+                "Potential Deepfake (AI Image containing Face/Place)"
+                if (has_face or has_landmark)
+                else "AI Generated (No Face or Place)"
             )
         else:
-            results["final_prediction_score"] = 0.0
             results["final_decision"] = "Likely Real / Low AI Confidence"
 
         return results
