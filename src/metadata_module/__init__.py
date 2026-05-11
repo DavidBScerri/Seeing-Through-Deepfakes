@@ -1,4 +1,4 @@
-from .metadata import (
+from .metadata_extraction import (
     AnalysisResult,
     FeatureSet,
     analyse_image,
