@@ -12,7 +12,7 @@ the notebook stays beginner-friendly.
 
 import os, json, io, torch, numpy as np
 from PIL import Image
-from datasets import load_dataset, Dataset, DatasetDict
+from datasets import load_dataset, Dataset, DatasetDict, concatenate_datasets
 from transformers import (
     AutoImageProcessor,
     AutoModelForImageClassification,
@@ -236,14 +236,42 @@ def run_training_stage(
     learning_rate=2e-5,
     stage_name="stage",
     fp16=False,
+    replay_ds=None,
+    replay_ratio=0.25,
 ):
     """
     Fine-tune *model* on *train_ds* / *eval_ds* and save to *output_dir*.
+
+    If *replay_ds* is provided, a random subset (sized as *replay_ratio* ×
+    len(train_ds)) is drawn from it and concatenated with *train_ds* before
+    training.  This implements **experience replay** to mitigate catastrophic
+    forgetting when fine-tuning across sequential stages.
+
     Returns (trained_model, trainer).
     """
     print(f"\n{'='*60}")
     print(f"  🚀  {stage_name}")
     print(f"{'='*60}")
+
+    # ── Experience replay: mix previous-stage data into current stage ──
+    if replay_ds is not None:
+        n_replay = max(1, int(len(train_ds) * replay_ratio))
+        replay_subset = replay_ds.shuffle(seed=42).select(
+            range(min(n_replay, len(replay_ds)))
+        )
+        # Align schemas — keep only columns common to both datasets
+        keep = set(train_ds.column_names) & set(replay_subset.column_names)
+        drop_primary = [c for c in train_ds.column_names if c not in keep]
+        drop_replay  = [c for c in replay_subset.column_names if c not in keep]
+        if drop_primary:
+            train_ds = train_ds.remove_columns(drop_primary)
+        if drop_replay:
+            replay_subset = replay_subset.remove_columns(drop_replay)
+
+        train_ds = concatenate_datasets([train_ds, replay_subset]).shuffle(seed=42)
+        print(f"  🔁  Experience replay: added {len(replay_subset)} samples "
+              f"from previous stage ({replay_ratio:.0%} ratio)")
+        print(f"  📊  Combined training set: {len(train_ds)} samples")
 
     # Apply transforms
     transform = make_transform(processor)
