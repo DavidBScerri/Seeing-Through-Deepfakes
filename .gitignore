@@ -32,6 +32,14 @@ env/
 .AppleDouble
 .LSOverride
 
+# ─── Training outputs / checkpoints ───────────────────────────────────────────
+# Full model directories are too large for Git (hundreds of MB).
+# Only lightweight LoRA adapters or weight-delta files should be committed.
+**/outputs/
+**/checkpoints/
+**/finetuned_model/
+wandb/
+
 # ─── Data / cache ─────────────────────────────────────────────────────────────
 data/
 .cache/
