@@ -301,11 +301,11 @@ def score_features(features: FeatureSet) -> tuple[float, list[str]]:
 
 
 def decide(prob: float, features: FeatureSet) -> str:
-    if features.has_ai_claim and prob >= 0.80:
+    if features.has_ai_claim and prob >= 0.70:
         return "likely_ai_generated"
-    if prob >= 0.75:
+    if prob >= 0.80:
         return "likely_ai_generated"
-    if prob <= 0.35:
+    if prob <= 0.40:
         return "likely_camera_origin"
     return "uncertain"
 
