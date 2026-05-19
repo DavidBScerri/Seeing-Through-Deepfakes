@@ -268,6 +268,10 @@ def run_training_stage(
         if drop_replay:
             replay_subset = replay_subset.remove_columns(drop_replay)
 
+        # Cast replay features to match train_ds features (e.g. binary → Image)
+        # so that concatenate_datasets doesn't choke on type mismatches.
+        replay_subset = replay_subset.cast(train_ds.features)
+
         train_ds = concatenate_datasets([train_ds, replay_subset]).shuffle(seed=42)
         print(f"  🔁  Experience replay: added {len(replay_subset)} samples "
               f"from previous stage ({replay_ratio:.0%} ratio)")
