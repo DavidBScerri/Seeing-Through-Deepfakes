@@ -133,7 +133,6 @@ class DeepfakeClassifier:
         Full integrated pipeline:
           1. Optionally run the visual classifier for AI-generated confidence.
           2. If the AI confidence ≥ ``threshold``, run all deepfake sub-models.
-          3. Combine results into a final decision.
 
         Args:
             image:             A PIL Image object.
@@ -144,16 +143,14 @@ class DeepfakeClassifier:
                                is triggered (default: 0.5).
 
         Returns:
-            dict with keys ``visual_classification``, ``deepfake_analysis``,
-            and ``final_decision``.
+            dict with keys ``visual_classification`` and ``deepfake_analysis``.
         """
         if image.mode != 'RGB':
             image = image.convert('RGB')
 
         results = {
             "visual_classification": None,
-            "deepfake_analysis": None,
-            "final_decision": "Inconclusive"
+            "deepfake_analysis": None
         }
 
         # 1. Visual Classifier (optional gate)
@@ -180,13 +177,6 @@ class DeepfakeClassifier:
                 "scene_analysis": scene_res,
                 "landmark_analysis": landmark_res
             }
-            results["final_decision"] = (
-                "Potential Deepfake (AI Image containing Face/Place)"
-                if (has_face or has_landmark)
-                else "AI Generated (No Face or Place)"
-            )
-        else:
-            results["final_decision"] = "Likely Real / Low AI Confidence"
 
         return results
 
