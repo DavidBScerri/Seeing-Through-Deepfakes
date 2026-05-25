@@ -48,6 +48,38 @@ def compute_metrics(eval_pred):
     return {"accuracy": acc, "f1": f1, "precision": precision, "recall": recall}
 
 
+# ── Layer freezing ─────────────────────────────────────────────────────────
+
+def freeze_encoder_layers(model, num_layers_to_freeze=10):
+    """
+    Freeze the first N encoder layers of a ViT model.
+
+    This preserves the model's general visual features (edges, textures,
+    shapes) while allowing the last few layers and the classifier head to
+    adapt to AI-vs-real classification.
+
+    For the dima806 ViT with 12 encoder layers:
+      freeze=10 → last 2 layers + head trainable (~14 M params)
+      freeze=8  → last 4 layers + head trainable (~28 M params)
+    """
+    # Freeze patch + position embeddings
+    for param in model.vit.embeddings.parameters():
+        param.requires_grad = False
+
+    # Freeze the first N transformer blocks
+    total_layers = len(model.vit.encoder.layer)
+    n = min(num_layers_to_freeze, total_layers)
+    for i in range(n):
+        for param in model.vit.encoder.layer[i].parameters():
+            param.requires_grad = False
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"  🧊  Froze {n}/{total_layers} encoder layers + embeddings")
+    print(f"      Trainable: {trainable:,} / {total:,} params "
+          f"({100 * trainable / total:.1f}%)")
+
+
 # ── GenImage label extraction ──────────────────────────────────────────────────
 
 def extract_genimage_label(example):
@@ -209,6 +241,52 @@ def make_transform(processor):
     return _transform
 
 
+def make_augmented_transform(processor):
+    """
+    Return a batched transform with data augmentation applied *before*
+    the model's image processor.  Used for training only.
+
+    Augmentations (all stochastic, applied per-image):
+      - Random horizontal flip (50 %)
+      - Random JPEG re-compression at quality 50-95 (30 %)
+      - Random brightness / contrast jitter ±20 % (30 %)
+    """
+    import random
+    from PIL import ImageEnhance
+
+    def _augment_single(img):
+        if random.random() < 0.5:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        # JPEG compression simulation — injects realistic artifacts
+        if random.random() < 0.3:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=random.randint(50, 95))
+            buf.seek(0)
+            img = Image.open(buf).convert("RGB")
+        # Brightness / contrast jitter
+        if random.random() < 0.3:
+            img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
+            img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
+        return img
+
+    def _transform(examples):
+        images = examples["image"]
+        if not isinstance(images, list):
+            images = [images]
+        converted = []
+        for img in images:
+            if isinstance(img, bytes):
+                img = Image.open(io.BytesIO(img))
+            img = img.convert("RGB")
+            img = _augment_single(img)
+            converted.append(img)
+        inputs = processor(converted, return_tensors="pt")
+        inputs["labels"] = examples["label"]
+        return inputs
+
+    return _transform
+
+
 def collate_fn(examples):
     """Custom collator – stacks pixel_values & labels into tensors."""
     pixel_values = []
@@ -238,6 +316,10 @@ def run_training_stage(
     fp16=False,
     replay_ds=None,
     replay_ratio=0.25,
+    freeze_layers=None,
+    augment=False,
+    weight_decay=0.01,
+    early_stopping_patience=2,
 ):
     """
     Fine-tune *model* on *train_ds* / *eval_ds* and save to *output_dir*.
@@ -246,6 +328,13 @@ def run_training_stage(
     len(train_ds)) is drawn from it and concatenated with *train_ds* before
     training.  This implements **experience replay** to mitigate catastrophic
     forgetting when fine-tuning across sequential stages.
+
+    If *freeze_layers* is set (e.g. 10), the first N ViT encoder layers plus
+    the embedding layer are frozen so the model retains its general visual
+    features and only the top layers + classifier head are updated.
+
+    If *augment* is True, training images receive random flips, colour
+    jitter, and JPEG re-compression to improve generalisation.
 
     Returns (trained_model, trainer).
     """
@@ -277,10 +366,16 @@ def run_training_stage(
               f"from previous stage ({replay_ratio:.0%} ratio)")
         print(f"  📊  Combined training set: {len(train_ds)} samples")
 
-    # Apply transforms
-    transform = make_transform(processor)
-    train_ds.set_transform(transform)
-    eval_ds.set_transform(transform)
+    # ── Layer freezing: preserve general features, adapt only top layers ──
+    if freeze_layers is not None:
+        freeze_encoder_layers(model, num_layers_to_freeze=freeze_layers)
+
+    # Apply transforms (with optional augmentation for training)
+    if augment:
+        train_ds.set_transform(make_augmented_transform(processor))
+    else:
+        train_ds.set_transform(make_transform(processor))
+    eval_ds.set_transform(make_transform(processor))
 
     args = TrainingArguments(
         output_dir=output_dir,
@@ -291,6 +386,7 @@ def run_training_stage(
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         gradient_accumulation_steps=4,
+        weight_decay=weight_decay,
         num_train_epochs=epochs,
         warmup_steps=50,
         logging_steps=10,
@@ -301,6 +397,13 @@ def run_training_stage(
         report_to="none",
     )
 
+    # ── Early stopping ──
+    callbacks = []
+    if early_stopping_patience is not None:
+        from transformers import EarlyStoppingCallback
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=early_stopping_patience))
+        print(f"  ⏱️  Early stopping enabled (patience={early_stopping_patience})")
+
     trainer = Trainer(
         model=model,
         args=args,
@@ -309,6 +412,7 @@ def run_training_stage(
         eval_dataset=eval_ds,
         processing_class=processor,
         compute_metrics=compute_metrics,
+        callbacks=callbacks or None,
     )
 
     results = trainer.train()
