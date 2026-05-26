@@ -267,6 +267,32 @@ def make_augmented_transform(processor):
         if random.random() < 0.3:
             img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
             img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
+        
+        # NEW: Random rotation (small angles — real photos are rarely perfectly level)
+        if random.random() < 0.3:
+            angle = random.uniform(-15, 15)
+            img = img.rotate(angle, fillcolor=(128, 128, 128))
+       
+        # NEW: Random crop + resize (simulates different crops/shares of the same image)
+        if random.random() < 0.3:
+            w, h = img.size
+            crop_ratio = random.uniform(0.8, 1.0)
+            new_w, new_h = int(w * crop_ratio), int(h * crop_ratio)
+            left = random.randint(0, w - new_w)
+            top = random.randint(0, h - new_h)
+            img = img.crop((left, top, left + new_w, top + new_h))
+            img = img.resize((w, h), Image.BILINEAR)
+        
+        # NEW: Random Gaussian blur (simulates real camera blur/social media compression)
+        if random.random() < 0.2:
+            from PIL import ImageFilter
+            radius = random.uniform(0.5, 1.5)
+            img = img.filter(ImageFilter.GaussianBlur(radius=radius))
+        
+        # NEW: Color jitter (saturation + hue)
+        if random.random() < 0.3:
+            img = ImageEnhance.Color(img).enhance(random.uniform(0.7, 1.3))
+        
         return img
 
     def _transform(examples):
@@ -318,7 +344,7 @@ def run_training_stage(
     replay_ratio=0.25,
     freeze_layers=None,
     augment=False,
-    weight_decay=0.01,
+    weight_decay=0.05,
     early_stopping_patience=2,
 ):
     """
@@ -345,9 +371,16 @@ def run_training_stage(
     # ── Experience replay: mix previous-stage data into current stage ──
     if replay_ds is not None:
         n_replay = max(1, int(len(train_ds) * replay_ratio))
-        replay_subset = replay_ds.shuffle(seed=42).select(
-            range(min(n_replay, len(replay_ds)))
-        )
+
+        # Balanced replay: 50/50 real/AI to prevent class bias
+        real_replay = replay_ds.filter(lambda x: x["label"] == 0).shuffle(seed=42)
+        ai_replay = replay_ds.filter(lambda x: x["label"] == 1).shuffle(seed=42)
+        n_each = n_replay // 2
+        replay_subset = concatenate_datasets([
+            real_replay.select(range(min(n_each, len(real_replay)))),
+            ai_replay.select(range(min(n_each, len(ai_replay)))),
+        ]).shuffle(seed=42)
+
         # Align schemas — keep only columns common to both datasets
         keep = set(train_ds.column_names) & set(replay_subset.column_names)
         drop_primary = [c for c in train_ds.column_names if c not in keep]
@@ -363,7 +396,7 @@ def run_training_stage(
 
         train_ds = concatenate_datasets([train_ds, replay_subset]).shuffle(seed=42)
         print(f"  🔁  Experience replay: added {len(replay_subset)} samples "
-              f"from previous stage ({replay_ratio:.0%} ratio)")
+              f"from previous stage ({replay_ratio:.0%} ratio) [balanced 50/50]")
         print(f"  📊  Combined training set: {len(train_ds)} samples")
 
     # ── Layer freezing: preserve general features, adapt only top layers ──
@@ -386,15 +419,17 @@ def run_training_stage(
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         gradient_accumulation_steps=4,
-        weight_decay=weight_decay,
         num_train_epochs=epochs,
-        warmup_steps=50,
         logging_steps=10,
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
         fp16=fp16,
         push_to_hub=False,
         report_to="none",
+        label_smoothing_factor=0.1,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.1,
+        weight_decay=weight_decay,
     )
 
     # ── Early stopping ──
