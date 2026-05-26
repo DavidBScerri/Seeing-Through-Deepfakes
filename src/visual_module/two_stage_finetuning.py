@@ -372,6 +372,10 @@ def run_training_stage(
     if replay_ds is not None:
         n_replay = max(1, int(len(train_ds) * replay_ratio))
 
+        # Reset any transform set by a previous training stage so the
+        # original column names (e.g. "label") are accessible for filtering.
+        replay_ds.reset_format()
+
         # Balanced replay: 50/50 real/AI to prevent class bias
         real_replay = replay_ds.filter(lambda x: x["label"] == 0).shuffle(seed=42)
         ai_replay = replay_ds.filter(lambda x: x["label"] == 1).shuffle(seed=42)
