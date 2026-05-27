@@ -80,6 +80,55 @@ def freeze_encoder_layers(model, num_layers_to_freeze=10):
           f"({100 * trainable / total:.1f}%)")
 
 
+# ── Model loader ───────────────────────────────────────────────────────────────
+
+BASE_MODEL_ID = "dima806/ai_vs_human_generated_image_detection"
+
+
+def load_model_from(source="base", device=None):
+    """
+    Load a model + processor from any source, ready for training or evaluation.
+
+    Parameters
+    ----------
+    source : str
+        One of:
+        - ``"base"`` → load the original dima806 HuggingFace model
+        - A local directory path (e.g. ``"outputs/models/run_01_genimage"``)
+        - A HuggingFace model ID
+    device : torch.device or None
+        Device to place the model on.  Auto-detected if None.
+
+    Returns
+    -------
+    (model, processor)
+        The model has a ``nn.Sequential(Dropout(0.3), Linear)`` classifier head
+        attached for consistency across all training runs.
+    """
+    if device is None:
+        device = get_device()
+
+    model_id = BASE_MODEL_ID if source == "base" else source
+
+    print(f"📦  Loading model from: {model_id}")
+    processor = AutoImageProcessor.from_pretrained(model_id)
+    model = AutoModelForImageClassification.from_pretrained(
+        model_id, ignore_mismatched_sizes=True
+    ).to(device)
+
+    # Always re-attach the dropout classifier head so every run starts
+    # with a consistent architecture, regardless of source.
+    model.classifier = torch.nn.Sequential(
+        torch.nn.Dropout(0.3),
+        torch.nn.Linear(model.config.hidden_size, model.config.num_labels),
+    )
+    model = model.to(device)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"✅  Model loaded  –  {n_params:,} parameters  (device: {device})")
+    return model, processor
+
+
 # ── GenImage label extraction ──────────────────────────────────────────────────
 
 def extract_genimage_label(example):
