@@ -60,7 +60,7 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # Handle pipeline execution requests
-        if self.path == "/api/analyze":
+        if self.path == "/api/analyse":
             content_type = self.headers.get("Content-Type", "")
             if not content_type.startswith("multipart/form-data"):
                 self.send_response(400)
@@ -190,7 +190,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             "weighted_average",
             w_meta=float(params.get("w_meta", 0.30)),
             w_visual=float(params.get("w_visual", 0.70)),
-            decision_threshold=float(params.get("wa_threshold", 0.55)),
+            decision_threshold=float(params.get("wa_threshold", 0.50)),
             meta_accuracy=float(params.get("meta_accuracy", 0.70)),
             visual_accuracy=float(params.get("visual_accuracy", 0.83)),
         )
@@ -204,7 +204,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
         strategy = get_fusion_strategy(
             "bayesian",
             prior=float(params.get("bayes_prior", 0.50)),
-            decision_threshold=float(params.get("bayes_threshold", 0.55)),
+            decision_threshold=float(params.get("bayes_threshold", 0.50)),
         )
     else:
         raise ValueError(f"Unknown fusion strategy '{strategy_name}'")
@@ -220,10 +220,23 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
     if fusion_result.is_ai:
         deepfake_result = deepfake_classifier.predict(pil_image)
         da = deepfake_result.get("deepfake_analysis")
+        
+        deepfake_threshold = float(params.get("deepfake_threshold", 0.50))
+        
         has_face = da.get("has_face", False) if da else False
-        has_place = da.get("has_place", False) if da else False
+        is_face_deepfake = False
+        if has_face and cropped_visual_ai_prob is not None:
+            if cropped_visual_ai_prob >= deepfake_threshold:
+                is_face_deepfake = True
 
-        if has_face or has_place:
+        has_place = da.get("has_place", False) if da else False
+        is_place_deepfake = False
+        if has_place:
+            landmark_conf = da.get("landmark_analysis", {}).get("confidence", 0.0)
+            if landmark_conf >= deepfake_threshold:
+                is_place_deepfake = True
+
+        if is_face_deepfake or is_place_deepfake:
             verdict = "Probable Deepfake (AI-generated image containing identifiable face/place)"
             verdict_type = "deepfake"
         else:

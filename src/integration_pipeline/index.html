@@ -886,6 +886,60 @@
       display: inline-block;
       vertical-align: middle;
     }
+
+    /* Notice Card & Animations */
+    .notice-card {
+      background-color: rgba(99, 102, 241, 0.05);
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      max-width: 600px;
+      width: 100%;
+      text-align: center;
+      transition: all var(--transition-speed);
+    }
+    .notice-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #a5b4fc;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .notice-text {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+    .checkbox-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-size: 12.5px;
+      color: var(--text-primary);
+      cursor: pointer;
+      user-select: none;
+    }
+    .checkbox-container input {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+    
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%, 60% { transform: translateX(-6px); }
+      40%, 80% { transform: translateX(6px); }
+    }
+    .shake {
+      animation: shake 0.4s ease-in-out;
+    }
   </style>
 </head>
 <body>
@@ -941,82 +995,12 @@
         New Analysis
       </button>
 
-      <div class="sidebar-section-title">⚙️ Pipeline Configuration</div>
-
-      <!-- Fusion strategy dropdown -->
-      <div class="control-group">
-        <label class="control-label" for="param-strategy">Decision Strategy</label>
-        <select class="input-control" id="param-strategy">
-          <option value="weighted_average">Weighted Average</option>
-          <option value="conservative_threshold">Conservative AND Gate</option>
-          <option value="bayesian">Bayesian Fusion</option>
-        </select>
-      </div>
-
-      <!-- Group 1: Weighted Average sliders -->
-      <div id="group-weighted_average">
-        <div class="control-group">
-          <div class="control-label"><span>Metadata Weight (W_meta)</span><span class="control-val" id="val-w_meta">0.30</span></div>
-          <input type="range" class="slider-control" id="param-w_meta" min="0" max="1" step="0.05" value="0.30">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Visual Weight (W_visual)</span><span class="control-val" id="val-w_visual">0.70</span></div>
-          <input type="range" class="slider-control" id="param-w_visual" min="0" max="1" step="0.05" value="0.70">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Metadata Accuracy</span><span class="control-val" id="val-meta_accuracy">0.70</span></div>
-          <input type="range" class="slider-control" id="param-meta_accuracy" min="0.5" max="1" step="0.01" value="0.70">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Visual Accuracy</span><span class="control-val" id="val-visual_accuracy">0.83</span></div>
-          <input type="range" class="slider-control" id="param-visual_accuracy" min="0.5" max="1" step="0.01" value="0.83">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Face Padding</span><span class="control-val" id="val-face_padding">0.30</span></div>
-          <input type="range" class="slider-control" id="param-face_padding" min="0" max="1" step="0.05" value="0.30">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Decision Threshold</span><span class="control-val" id="val-wa_threshold">0.55</span></div>
-          <input type="range" class="slider-control" id="param-wa_threshold" min="0.10" max="0.95" step="0.05" value="0.55">
-        </div>
-      </div>
-
-      <!-- Group 2: Conservative Threshold sliders -->
-      <div id="group-conservative_threshold" class="hidden">
-        <div class="control-group">
-          <div class="control-label"><span>Metadata Threshold</span><span class="control-val" id="val-ct_meta_thresh">0.70</span></div>
-          <input type="range" class="slider-control" id="param-ct_meta_thresh" min="0.10" max="0.99" step="0.05" value="0.70">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Visual Threshold</span><span class="control-val" id="val-ct_visual_thresh">0.65</span></div>
-          <input type="range" class="slider-control" id="param-ct_visual_thresh" min="0.10" max="0.99" step="0.05" value="0.65">
-        </div>
-      </div>
-
-      <!-- Group 3: Bayesian Fusion sliders -->
-      <div id="group-bayesian" class="hidden">
-        <div class="control-group">
-          <div class="control-label"><span>Prior Probability</span><span class="control-val" id="val-bayes_prior">0.50</span></div>
-          <input type="range" class="slider-control" id="param-bayes_prior" min="0.05" max="0.95" step="0.05" value="0.50">
-        </div>
-        <div class="control-group">
-          <div class="control-label"><span>Decision Threshold</span><span class="control-val" id="val-bayes_threshold">0.55</span></div>
-          <input type="range" class="slider-control" id="param-bayes_threshold" min="0.10" max="0.95" step="0.05" value="0.55">
-        </div>
-      </div>
-
-      <!-- Common parameter: Deepfake secondary threshold -->
-      <div class="control-group">
-        <div class="control-label"><span>Deepfake Sub-threshold</span><span class="control-val" id="val-deepfake_threshold">0.50</span></div>
-        <input type="range" class="slider-control" id="param-deepfake_threshold" min="0.10" max="0.95" step="0.05" value="0.50">
-      </div>
-
-      <!-- Session History -->
+      <!-- Session History Only -->
       <div class="sidebar-section-title">🕒 Analysis History</div>
       <div class="history-list" id="history-list">
         <!-- Dynamic history items go here -->
         <div class="history-item empty" id="history-empty">
-          <span style="font-size:11px; color:var(--text-muted); font-style:italic;">No files analyzed yet in this session.</span>
+          <span style="font-size:11px; color:var(--text-muted); font-style:italic;">No files analysed yet in this session.</span>
         </div>
       </div>
     </div>
@@ -1028,7 +1012,7 @@
     <header class="main-header">
       <div>Active Pipeline</div>
       <div class="active-config-badge" id="active-badge">
-        Strategy: Weighted Average | Threshold: 0.55
+        Strategy: Weighted Average | Threshold: 0.50
       </div>
     </header>
 
@@ -1046,6 +1030,21 @@
           <h1 class="empty-title">Seeing through Deepfakes</h1>
           <p class="empty-subtitle">Upload any image to execute content provenance checks, ViT deep learning classifiers, and face landmark retrieval to check if it's real or AI-generated.</p>
           
+          <!-- AI Analysis Notice Card -->
+          <div class="notice-card" id="notice-card">
+            <div class="notice-title">
+              <svg class="icon" style="width:14px; height:14px;"><use href="#icon-alert-triangle"/></svg>
+              AI Analysis Notice
+            </div>
+            <div class="notice-text">
+              This system uses advanced probabilistic machine learning models and EXIF heuristics to estimate the likelihood of AI generation or manipulation. It does not provide absolute proof and should be used as an evaluation aid.
+            </div>
+            <label class="checkbox-container">
+              <input type="checkbox" id="chk-notice">
+              <span>I understand this is an AI prediction, not proof</span>
+            </label>
+          </div>
+
           <!-- Drop Zone -->
           <div class="drop-zone" id="drop-zone">
             <input type="file" id="file-input" class="hidden" accept=".png,.jpg,.jpeg,.webp">
@@ -1072,7 +1071,7 @@
         <!-- 2. PROCESSING / LOADING STATE -->
         <div class="processing-state" id="view-processing">
           <div class="spinner"></div>
-          <div class="processing-title" id="processing-title">Analyzing Image</div>
+          <div class="processing-title" id="processing-title">Analysing Image</div>
           <div class="processing-subtitle" id="processing-subtitle">Initializing modules...</div>
         </div>
 
@@ -1278,11 +1277,16 @@
                 </div>
               </div>
 
+              <!-- Limitation Note -->
+              <div class="limitation-note" style="font-size: 11px; color: var(--text-muted); line-height: 1.5; text-align: center; margin-top: 16px; margin-bottom: 24px; padding: 0 16px;">
+                ⚠️ <strong>Limitation Note:</strong> This classification is based on probabilistic AI models and metadata heuristics. It should be used for informational purposes only and does not constitute definitive proof of authenticity or manipulation.
+              </div>
+
               <!-- Upload another image button in bubble -->
               <div class="actions-bar">
                 <button class="btn-secondary" id="btn-upload-another">
                   <svg class="icon"><use href="#icon-file-up"/></svg>
-                  Analyze Another Image
+                  Analyse Another Image
                 </button>
               </div>
 
@@ -1350,56 +1354,36 @@
       });
     });
 
-    // --- Settings / Sliders Event Hooks ---
-    const strategySelect = document.getElementById('param-strategy');
-    const allGroups = ['weighted_average', 'conservative_threshold', 'bayesian'];
+    // --- Checkbox Validation ---
+    const checkbox = document.getElementById('chk-notice');
+    const noticeCard = document.getElementById('notice-card');
     
-    // Sliders
-    const sliders = [
-      'w_meta', 'w_visual', 'meta_accuracy', 'visual_accuracy', 'face_padding', 
-      'wa_threshold', 'ct_meta_thresh', 'ct_visual_thresh', 'bayes_prior', 
-      'bayes_threshold', 'deepfake_threshold'
-    ];
-
-    strategySelect.addEventListener('change', () => {
-      const selected = strategySelect.value;
-      allGroups.forEach(g => {
-        const div = document.getElementById('group-' + g);
-        if (g === selected) {
-          div.classList.remove('hidden');
-        } else {
-          div.classList.add('hidden');
-        }
-      });
-      updateBadge();
-    });
-
-    sliders.forEach(s => {
-      const input = document.getElementById('param-' + s);
-      const valSpan = document.getElementById('val-' + s);
-      if (input && valSpan) {
-        input.addEventListener('input', () => {
-          valSpan.textContent = parseFloat(input.value).toFixed(2);
-          updateBadge();
-        });
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        noticeCard.style.borderColor = 'rgba(99, 102, 241, 0.2)';
+        noticeCard.style.backgroundColor = 'rgba(99, 102, 241, 0.05)';
       }
     });
 
-    function updateBadge() {
-      const stratName = strategySelect.options[strategySelect.selectedIndex].text;
-      let thresh = '0.50';
-      if (strategySelect.value === 'weighted_average') {
-        thresh = document.getElementById('param-wa_threshold').value;
-      } else if (strategySelect.value === 'conservative_threshold') {
-        thresh = `Meta:${document.getElementById('param-ct_meta_thresh').value} Vis:${document.getElementById('param-ct_visual_thresh').value}`;
-      } else if (strategySelect.value === 'bayesian') {
-        thresh = document.getElementById('param-bayes_threshold').value;
+    function validateNoticeAccepted() {
+      if (!checkbox.checked) {
+        noticeCard.classList.add('shake');
+        setTimeout(() => noticeCard.classList.remove('shake'), 400);
+        noticeCard.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+        noticeCard.style.backgroundColor = 'rgba(239, 68, 68, 0.05)';
+        return false;
       }
-      activeBadge.textContent = `Strategy: ${stratName} | Threshold: ${thresh}`;
+      return true;
     }
 
     // --- File Drop / Selection ---
-    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('click', (e) => {
+      if (!validateNoticeAccepted()) {
+        e.preventDefault();
+        return;
+      }
+      fileInput.click();
+    });
     
     dropZone.addEventListener('dragover', (e) => {
       e.preventDefault();
@@ -1413,12 +1397,20 @@
     dropZone.addEventListener('drop', (e) => {
       e.preventDefault();
       dropZone.classList.remove('dragover');
+      if (!validateNoticeAccepted()) {
+        return;
+      }
       if (e.dataTransfer.files.length > 0) {
         processUploadedFile(e.dataTransfer.files[0]);
       }
     });
 
     fileInput.addEventListener('change', () => {
+      if (!checkbox.checked) {
+        validateNoticeAccepted();
+        fileInput.value = '';
+        return;
+      }
       if (fileInput.files.length > 0) {
         processUploadedFile(fileInput.files[0]);
       }
@@ -1426,8 +1418,10 @@
 
     // Suggestions click
     document.querySelectorAll('.suggestion-tile').forEach(tile => {
-      tile.addEventListener('click', () => {
-        // Just trigger standard click upload
+      tile.addEventListener('click', (e) => {
+        if (!validateNoticeAccepted()) {
+          return;
+        }
         fileInput.click();
       });
     });
@@ -1438,6 +1432,8 @@
 
     function resetToEmptyView() {
       fileInput.value = '';
+      noticeCard.style.borderColor = 'rgba(99, 102, 241, 0.2)';
+      noticeCard.style.backgroundColor = 'rgba(99, 102, 241, 0.05)';
       activeResultId = null;
       document.querySelectorAll('.history-item').forEach(item => item.classList.remove('active'));
       
@@ -1446,17 +1442,22 @@
       viewResults.style.display = 'none';
     }
 
-    // Gather config values to send to backend
+    // Gather default config values to send to backend
     function getFormDataConfig() {
-      const config = {};
-      config.fusion_strategy = strategySelect.value;
-      sliders.forEach(s => {
-        const el = document.getElementById('param-' + s);
-        if (el) {
-          config[s] = el.value;
-        }
-      });
-      return config;
+      return {
+        fusion_strategy: 'weighted_average',
+        w_meta: '0.30',
+        w_visual: '0.70',
+        meta_accuracy: '0.70',
+        visual_accuracy: '0.83',
+        face_padding: '0.30',
+        wa_threshold: '0.50',
+        ct_meta_thresh: '0.70',
+        ct_visual_thresh: '0.65',
+        bayes_prior: '0.50',
+        bayes_threshold: '0.50',
+        deepfake_threshold: '0.50'
+      };
     }
 
     // --- Main File Processing Pipeline ---
@@ -1500,7 +1501,7 @@
       }, 700);
 
       // Perform POST upload
-      fetch('/api/analyze', {
+      fetch('/api/analyse', {
         method: 'POST',
         body: formData
       })
@@ -1753,9 +1754,6 @@
       // Insert at the top of history
       historyList.insertBefore(item, historyList.firstChild);
     }
-
-    // Initialize badge
-    updateBadge();
   </script>
 </body>
 </html>
