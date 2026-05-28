@@ -27,6 +27,44 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+from PIL import Image
+
+
+# ---------------------------------------------------------------------------
+# Helper: Crop Face Region
+# ---------------------------------------------------------------------------
+
+def crop_face_region(image: Image.Image, bbox: list[float] | tuple[float, float, float, float], padding: float = 0.3) -> Image.Image:
+    """
+    Crops a face bounding box from an image, adding a relative padding margin on each side,
+    and clamping the coordinates to the image boundaries.
+    
+    Args:
+        image: PIL Image object.
+        bbox: Bounding box coordinates [x1, y1, x2, y2].
+        padding: Padding factor (e.g. 0.3 for 30% padding).
+        
+    Returns:
+        Cropped face PIL Image.
+    """
+    w, h = image.size
+    x1, y1, x2, y2 = bbox
+    
+    box_w = x2 - x1
+    box_h = y2 - y1
+    
+    # Calculate padding pixels
+    pad_w = box_w * padding
+    pad_h = box_h * padding
+    
+    # Expand coordinates
+    new_x1 = max(0, x1 - pad_w)
+    new_y1 = max(0, y1 - pad_h)
+    new_x2 = min(w, x2 + pad_w)
+    new_y2 = min(h, y2 + pad_h)
+    
+    return image.crop((new_x1, new_y1, new_x2, new_y2))
+
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +126,19 @@ class FusionStrategy(ABC):
     """Base class for all decision-fusion strategies."""
 
     @abstractmethod
-    def fuse(self, metadata_ai_prob: float, visual_ai_prob: float) -> FusionResult:
+    def fuse(
+        self,
+        metadata_ai_prob: float,
+        visual_ai_prob: float,
+        cropped_visual_ai_prob: float | None = None,
+    ) -> FusionResult:
         """
-        Combine two AI-generated probabilities into one decision.
+        Combine AI-generated probabilities into one decision.
 
         Args:
-            metadata_ai_prob: P(AI) from the metadata module (0–1).
-            visual_ai_prob:   P(AI) from the visual classifier (0–1).
+            metadata_ai_prob:       P(AI) from the metadata module (0–1).
+            visual_ai_prob:         P(AI) from the visual classifier (0–1).
+            cropped_visual_ai_prob: Optional P(AI) from the cropped face visual classifier.
 
         Returns:
             FusionResult with the combined probability and decision.
@@ -107,21 +151,19 @@ class FusionStrategy(ABC):
 
 class WeightedAverageFusion(FusionStrategy):
     """
-    Weighted linear combination of the two module probabilities.
+    Weighted average fusion of metadata and visual AI probabilities.
+    
+    If a cropped face probability is provided, the visual component is enhanced
+    by taking the maximum of the whole-image visual probability and the cropped face
+    visual probability:
+        visual_prob_effective = max(visual_prob, cropped_visual_prob)
 
-    Formula
-    -------
-        combined = w_meta × metadata_prob  +  w_visual × visual_prob
-
-    The default weighting (0.3 / 0.7) down-weights metadata because:
-    • Metadata can be trivially stripped or manipulated.
-    • Placeholder slots (w=0.1 each) are reserved for future modules
-      (watermark detection, perceptual hashing) so the weights across
-      all modules will eventually total 1.0.
-
-    The visual weight can optionally be scaled by the model's known
-    test-set accuracy via `visual_accuracy`, providing a principled
-    self-calibration signal.
+    Formula:
+        eff_meta   = w_meta * meta_accuracy
+        eff_visual = w_visual * visual_accuracy
+        total      = eff_meta + eff_visual
+        
+        combined = (eff_meta * metadata_prob + eff_visual * visual_prob_effective) / total
 
     Parameters
     ----------
@@ -131,11 +173,10 @@ class WeightedAverageFusion(FusionStrategy):
         Weight for the visual module (default 0.7).
     decision_threshold : float
         Combined score above which the image is classified AI (default 0.55).
+    meta_accuracy : float or None
+        Scale factor for the metadata weight (default 0.70).
     visual_accuracy : float or None
-        If provided, the visual weight is scaled by this value
-        (e.g. 0.92 for 92 % test accuracy), giving an accuracy-aware
-        effective weight of ``w_visual × visual_accuracy``.
-        The weights are then re-normalised to sum to 1.
+        Scale factor for the visual weight (default 0.83).
     """
 
     def __init__(
@@ -143,26 +184,40 @@ class WeightedAverageFusion(FusionStrategy):
         w_meta: float = 0.3,
         w_visual: float = 0.7,
         decision_threshold: float = 0.55,
-        visual_accuracy: float | None = None,
+        meta_accuracy: float | None = 0.70,
+        visual_accuracy: float | None = 0.83,
     ):
         self.w_meta = w_meta
         self.w_visual = w_visual
         self.decision_threshold = decision_threshold
+        self.meta_accuracy = meta_accuracy
         self.visual_accuracy = visual_accuracy
 
-    def fuse(self, metadata_ai_prob: float, visual_ai_prob: float) -> FusionResult:
-        eff_w_meta = self.w_meta
-        eff_w_visual = self.w_visual
+    def fuse(
+        self,
+        metadata_ai_prob: float,
+        visual_ai_prob: float,
+        cropped_visual_ai_prob: float | None = None,
+    ) -> FusionResult:
+        # Option B (MAX Operator): Take the maximum of whole-image and cropped face probabilities
+        has_crop = (cropped_visual_ai_prob is not None)
+        if has_crop:
+            effective_visual_ai_prob = max(visual_ai_prob, cropped_visual_ai_prob)
+        else:
+            effective_visual_ai_prob = visual_ai_prob
 
-        # Scale the visual weight by its known accuracy if provided
-        if self.visual_accuracy is not None:
-            eff_w_visual = self.w_visual * self.visual_accuracy
-            # Re-normalise so the effective weights sum to 1
-            total = eff_w_meta + eff_w_visual
-            eff_w_meta /= total
-            eff_w_visual /= total
+        eff_w_meta = self.w_meta * (self.meta_accuracy if self.meta_accuracy is not None else 1.0)
+        eff_w_visual = self.w_visual * (self.visual_accuracy if self.visual_accuracy is not None else 1.0)
 
-        combined = eff_w_meta * metadata_ai_prob + eff_w_visual * visual_ai_prob
+        total = eff_w_meta + eff_w_visual
+        if total > 0:
+            eff_w_meta_norm = eff_w_meta / total
+            eff_w_visual_norm = eff_w_visual / total
+        else:
+            eff_w_meta_norm = 0.0
+            eff_w_visual_norm = 0.0
+
+        combined = eff_w_meta_norm * metadata_ai_prob + eff_w_visual_norm * effective_visual_ai_prob
         combined = max(0.0, min(1.0, combined))
 
         return FusionResult(
@@ -172,11 +227,14 @@ class WeightedAverageFusion(FusionStrategy):
             explanation={
                 "w_meta_nominal": self.w_meta,
                 "w_visual_nominal": self.w_visual,
-                "w_meta_effective": round(eff_w_meta, 4),
-                "w_visual_effective": round(eff_w_visual, 4),
+                "w_meta_effective": round(eff_w_meta_norm, 4),
+                "w_visual_effective": round(eff_w_visual_norm, 4),
+                "meta_accuracy": self.meta_accuracy,
                 "visual_accuracy": self.visual_accuracy,
                 "metadata_ai_prob": round(metadata_ai_prob, 4),
-                "visual_ai_prob": round(visual_ai_prob, 4),
+                "visual_ai_prob_raw": round(visual_ai_prob, 4),
+                "cropped_visual_ai_prob": round(cropped_visual_ai_prob, 4) if has_crop else None,
+                "visual_ai_prob_effective": round(effective_visual_ai_prob, 4),
                 "combined_score": round(combined, 4),
                 "decision_threshold": self.decision_threshold,
             },
@@ -220,7 +278,12 @@ class ConservativeThresholdFusion(FusionStrategy):
         self.meta_threshold = meta_threshold
         self.visual_threshold = visual_threshold
 
-    def fuse(self, metadata_ai_prob: float, visual_ai_prob: float) -> FusionResult:
+    def fuse(
+        self,
+        metadata_ai_prob: float,
+        visual_ai_prob: float,
+        cropped_visual_ai_prob: float | None = None,
+    ) -> FusionResult:
         meta_pass = metadata_ai_prob >= self.meta_threshold
         visual_pass = visual_ai_prob >= self.visual_threshold
 
@@ -304,7 +367,12 @@ class BayesianFusion(FusionStrategy):
         self.prior = prior
         self.decision_threshold = decision_threshold
 
-    def fuse(self, metadata_ai_prob: float, visual_ai_prob: float) -> FusionResult:
+    def fuse(
+        self,
+        metadata_ai_prob: float,
+        visual_ai_prob: float,
+        cropped_visual_ai_prob: float | None = None,
+    ) -> FusionResult:
         # Clamp to avoid division-by-zero / log(0) edge cases
         eps = 1e-9
         p1 = max(eps, min(1 - eps, metadata_ai_prob))

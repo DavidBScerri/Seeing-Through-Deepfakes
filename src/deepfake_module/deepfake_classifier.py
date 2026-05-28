@@ -72,18 +72,22 @@ class DeepfakeClassifier:
             image: A PIL Image object.
 
         Returns:
-            dict with keys ``label``, and ``confidence`` (face certainty).
+            dict with keys ``label``, ``confidence`` (face certainty), and ``bbox`` (bounding box [x1, y1, x2, y2] or None).
         """
         # Detect face using MTCNN
         boxes, probs = self.mtcnn.detect(image)
         if boxes is None or len(boxes) == 0:
-            return {"label": "No Face", "confidence": 0.0}
+            return {"label": "No Face", "confidence": 0.0, "bbox": None}
         
-        face_certainty = float(np.max(probs))
+        # Select the index of the highest probability face (most evident face)
+        idx = int(np.argmax(probs))
+        face_certainty = float(probs[idx])
+        
         if face_certainty < 0.90:
-            return {"label": "No Face", "confidence": round(face_certainty, 4)}
+            return {"label": "No Face", "confidence": round(face_certainty, 4), "bbox": None}
 
-        return {"label": "Face Detected", "confidence": round(face_certainty, 4)}
+        bbox = [float(x) for x in boxes[idx]]
+        return {"label": "Face Detected", "confidence": round(face_certainty, 4), "bbox": bbox}
 
     def predict_scene(self, image):
         """
