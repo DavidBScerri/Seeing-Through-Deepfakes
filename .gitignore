@@ -42,4 +42,5 @@ wandb/
 
 # ─── Data / cache ─────────────────────────────────────────────────────────────
 !**/data/**
+src/visual_module/data/zitacron_subset/
 .cache/
