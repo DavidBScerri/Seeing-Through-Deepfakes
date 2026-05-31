@@ -7,7 +7,7 @@ import numpy as np
 class VisualClassifier:
     def __init__(
         self,
-        model_name_or_path="dima806/ai_vs_human_generated_image_detection",
+        model_name_or_path="facebook/convnextv2-large-22k-224",
         delta_path=None,
     ):
         """
@@ -18,7 +18,7 @@ class VisualClassifier:
             delta_path: Optional path to a .pt delta file produced by save_weight_delta().
                         When provided, the base model is loaded from model_name_or_path
                         and the stored weight differences are applied on top, avoiding
-                        the need to store a full 327 MB model file in the repository.
+                        the need to store a full model file in the repository.
         """
         self.device = torch.device(
             "mps" if torch.backends.mps.is_available()
@@ -28,7 +28,7 @@ class VisualClassifier:
         self.processor = AutoImageProcessor.from_pretrained(model_name_or_path)
         self.model = AutoModelForImageClassification.from_pretrained(
             model_name_or_path,
-            attn_implementation="eager"
+            ignore_mismatched_sizes=True,
         ).to(self.device)
 
         if delta_path is not None:
@@ -44,7 +44,6 @@ class VisualClassifier:
 
         Args:
             image: A PIL Image object.
-            uncertainty_threshold: Confidence threshold below which the model is "Uncertain".
 
         Returns:
             A dictionary containing the prediction label and confidence score.
@@ -66,8 +65,10 @@ class VisualClassifier:
         # Get label from model config
         label = self.model.config.id2label[predicted_class_idx].lower()
         
-        # Map label to readable format
-        if "human" in label or "real" in label:
+        # Map label to readable format (supporting legacy 22k-class checks for class 0/1)
+        if len(self.model.config.id2label) > 2 and predicted_class_idx in (0, 1):
+            mapped_label = "Real" if predicted_class_idx == 0 else "AI Generated"
+        elif "human" in label or "real" in label:
             mapped_label = "Real"
         else:
             mapped_label = "AI Generated"
@@ -86,7 +87,7 @@ class VisualClassifier:
 
 def save_weight_delta(
     fine_tuned_model,
-    base_model_name="dima806/ai_vs_human_generated_image_detection",
+    base_model_name="facebook/convnextv2-large-22k-224",
     output_path="./fine_tuned_model_delta/weight_delta.pt",
     threshold: float = 1e-9,
 ):
@@ -101,13 +102,8 @@ def save_weight_delta(
         Reconstruction (done in load_weight_delta):
             diff   ≈ stored.float() * scale
 
-    Results for this ViT (86 M params, all layers unfrozen):
-        Full model.safetensors : 327 MB  (❌ over GitHub 100 MB limit)
-        This delta file        :  ~82 MB  (✅ under GitHub 100 MB limit)
-        Max reconstruction err : < 0.00002  (negligible vs weight scale ~0.01–1.0)
-
     Args:
-        fine_tuned_model: The trained model object (in memory after fine_tune_model()).
+        fine_tuned_model: The trained model object (in memory after training).
         base_model_name:  HuggingFace model ID of the base model used for training.
         output_path:      Where to write the .pt delta file.
         threshold:        Tensors whose L∞ change is below this are skipped (pure zeros).
@@ -115,7 +111,9 @@ def save_weight_delta(
         (output_path, size_mb)
     """
     print(f"Loading base model '{base_model_name}' to compute delta...")
-    base_model = AutoModelForImageClassification.from_pretrained(base_model_name)
+    base_model = AutoModelForImageClassification.from_pretrained(
+        base_model_name, ignore_mismatched_sizes=True
+    )
 
     # Move both state dicts to CPU upfront to avoid any device mismatch
     ft_state   = {k: v.float().cpu() for k, v in fine_tuned_model.state_dict().items()}
@@ -171,14 +169,8 @@ def load_weight_delta(model, delta_path, device=None):
     state      = model.state_dict()
 
     for key, payload in delta.items():
-        # Backward compatibility for legacy sequential classifier head keys
-        target_key = key
-        if key == "classifier.1.weight":
-            target_key = "classifier.weight"
-        elif key == "classifier.1.bias":
-            target_key = "classifier.bias"
-
-        if target_key not in state:
+        if key not in state:
+            print(f"  [delta] Skipping key not in model: {key}")
             continue
         if fmt == "int8" and isinstance(payload, dict):
             # Dequantise: diff ≈ q * scale
@@ -186,7 +178,7 @@ def load_weight_delta(model, delta_path, device=None):
         else:
             # Legacy float16 delta
             diff = payload.float()
-        state[target_key] = (state[target_key].float() + diff).to(state[target_key].dtype)
+        state[key] = (state[key].float() + diff).to(state[key].dtype)
 
     model.load_state_dict(state)
 
@@ -211,8 +203,8 @@ def compute_metrics(eval_pred):
     }
 
 def fine_tune_model(
-    model_name="dima806/ai_vs_human_generated_image_detection",
-    dataset_name="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+    model_name="facebook/convnextv2-large-22k-224",
+    dataset_name="Zitacron/real-vs-ai-corpus",
     output_dir="./fine_tuned_model",
     epochs=3,
     batch_size=16,
@@ -222,42 +214,25 @@ def fine_tune_model(
     Fine-tunes the image classification model on the provided dataset.
     """
     print(f"Loading dataset: {dataset_name}")
-    if "GenImage" in dataset_name:
-        from datasets import interleave_datasets
-        print("Using streaming mode for GenImage to preserve local storage.")
-        dataset = load_dataset(dataset_name, streaming=True)
-        
-        def map_label(example):
-            path = example.get("image_path", "").lower()
-            # dima806 model: 0 is human/real, 1 is AI-generated
-            example["label"] = 0 if "/nature/" in path or "/real/" in path else 1
-            return example
-            
-        mapped_ds = dataset['train'].map(map_label)
-        
-        real_stream = mapped_ds.filter(lambda x: x["label"] == 0)
-        fake_stream = mapped_ds.filter(lambda x: x["label"] == 1)
-        
-        balanced_stream = interleave_datasets([real_stream, fake_stream])
-        
-        # Take 50,000 unique images for training
-        train_ds = balanced_stream.take(50000)
-        # Skip 50,000 and take 20,000 for testing
-        test_ds = balanced_stream.skip(50000).take(20000)
-        
-        max_train_samples = 50000
+    dataset = load_dataset(dataset_name)
+    
+    # Handle datasets with only a 'train' split
+    if "test" not in dataset:
+        split = dataset["train"].train_test_split(test_size=0.2, seed=42)
+        train_ds = split["train"]
+        test_ds = split["test"]
     else:
-        dataset = load_dataset(dataset_name)
         train_ds = dataset['train']
         test_ds = dataset['test']
-        max_train_samples = len(train_ds)
     
     processor = AutoImageProcessor.from_pretrained(model_name)
-    model = AutoModelForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True)
-    
-    # Make sure we have label mappings correctly depending on the dataset
-    # You might need to map dataset labels to the model's labels if they differ.
-    # Assuming dataset has 'image' and 'label' columns.
+    model = AutoModelForImageClassification.from_pretrained(
+        model_name,
+        num_labels=2,
+        id2label={0: "human", 1: "AI-generated"},
+        label2id={"human": 0, "AI-generated": 1},
+        ignore_mismatched_sizes=True
+    )
     
     def transforms(examples):
         # Support both batched lists or individual dicts
@@ -269,32 +244,19 @@ def fine_tune_model(
         return inputs
         
     print("Applying transformations...")
-    if "GenImage" in dataset_name:
-        cols_to_remove = ["image", "image_path", "md5", "width", "height"]
-        train_ds = train_ds.map(transforms, batched=True, batch_size=batch_size, remove_columns=cols_to_remove)
-        test_ds = test_ds.map(transforms, batched=True, batch_size=batch_size, remove_columns=cols_to_remove)
-    else:
-        train_ds.set_transform(transforms)
-        test_ds.set_transform(transforms)
-    
-    # Calculate max steps for streaming datasets
-    gradient_accumulation_steps = 4
-    steps_per_epoch = max_train_samples // (batch_size * gradient_accumulation_steps)
-    max_steps = steps_per_epoch * epochs if "GenImage" in dataset_name else -1
+    train_ds.set_transform(transforms)
+    test_ds.set_transform(transforms)
     
     training_args = TrainingArguments(
         output_dir=output_dir,
         remove_unused_columns=False,
-        eval_strategy="steps" if "GenImage" in dataset_name else "epoch",
-        eval_steps=steps_per_epoch if "GenImage" in dataset_name else None,
-        save_strategy="steps" if "GenImage" in dataset_name else "epoch",
-        save_steps=steps_per_epoch if "GenImage" in dataset_name else None,
+        eval_strategy="epoch",
+        save_strategy="epoch",
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps, # To fit in VRAM effectively
+        gradient_accumulation_steps=4,
         per_device_eval_batch_size=batch_size,
         num_train_epochs=epochs,
-        max_steps=max_steps,
         warmup_steps=0.1,
         logging_steps=10,
         load_best_model_at_end=True,
@@ -334,25 +296,3 @@ def fine_tune_model(
     trainer.save_state()
     
     return model, processor
-
-def get_genimage_test_dataset():
-    """
-    Returns the streaming test dataset for GenImage, matching the split logic
-    used during fine-tuning (skip 50000, take 20000).
-    """
-    from datasets import load_dataset, interleave_datasets
-    dataset = load_dataset("nebula/GenImage-arrow", streaming=True)
-    
-    def map_label(example):
-        path = example.get("image_path", "").lower()
-        example["label"] = 0 if "/nature/" in path or "/real/" in path else 1
-        return example
-        
-    mapped_ds = dataset['train'].map(map_label)
-    real_stream = mapped_ds.filter(lambda x: x["label"] == 0)
-    fake_stream = mapped_ds.filter(lambda x: x["label"] == 1)
-    
-    balanced_stream = interleave_datasets([real_stream, fake_stream])
-    test_ds = balanced_stream.skip(50000).take(20000)
-    return test_ds
-

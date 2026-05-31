@@ -1,10 +1,11 @@
 """
 two_stage_finetuning.py
 ========================
-Helper utilities for the two-stage fine-tuning notebook.
+Helper utilities for the fine-tuning notebook.
 
-Stage 1 – fine-tune on a small streamed subset of nebula/GenImage-arrow
-Stage 2 – continue fine-tuning on julienlucas/midjourney-dalle-sd-nanobananapro-dataset
+Provides dataset loading (Zitacron/real-vs-ai-corpus), preprocessing,
+augmentation, training, and evaluation helpers for training a
+ConvNeXt V2-based AI-vs-real image classifier.
 
 This module is imported by the notebook; all heavy lifting lives here so
 the notebook stays beginner-friendly.
@@ -48,41 +49,9 @@ def compute_metrics(eval_pred):
     return {"accuracy": acc, "f1": f1, "precision": precision, "recall": recall}
 
 
-# ── Layer freezing ─────────────────────────────────────────────────────────
-
-def freeze_encoder_layers(model, num_layers_to_freeze=10):
-    """
-    Freeze the first N encoder layers of a ViT model.
-
-    This preserves the model's general visual features (edges, textures,
-    shapes) while allowing the last few layers and the classifier head to
-    adapt to AI-vs-real classification.
-
-    For the dima806 ViT with 12 encoder layers:
-      freeze=10 → last 2 layers + head trainable (~14 M params)
-      freeze=8  → last 4 layers + head trainable (~28 M params)
-    """
-    # Freeze patch + position embeddings
-    for param in model.vit.embeddings.parameters():
-        param.requires_grad = False
-
-    # Freeze the first N transformer blocks
-    total_layers = len(model.vit.encoder.layer)
-    n = min(num_layers_to_freeze, total_layers)
-    for i in range(n):
-        for param in model.vit.encoder.layer[i].parameters():
-            param.requires_grad = False
-
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in model.parameters())
-    print(f"  🧊  Froze {n}/{total_layers} encoder layers + embeddings")
-    print(f"      Trainable: {trainable:,} / {total:,} params "
-          f"({100 * trainable / total:.1f}%)")
-
-
 # ── Model loader ───────────────────────────────────────────────────────────────
 
-BASE_MODEL_ID = "dima806/ai_vs_human_generated_image_detection"
+BASE_MODEL_ID = "facebook/convnextv2-large-22k-224"
 
 
 def load_model_from(source="base", device=None):
@@ -93,8 +62,8 @@ def load_model_from(source="base", device=None):
     ----------
     source : str
         One of:
-        - ``"base"`` → load the original dima806 HuggingFace model
-        - A local directory path (e.g. ``"outputs/models/run_01_genimage"``)
+        - ``"base"`` → load the facebook/convnextv2-large-22k-224 HuggingFace model
+        - A local directory path (e.g. ``"outputs/models/run_01_zitacron"``)
         - A HuggingFace model ID
     device : torch.device or None
         Device to place the model on.  Auto-detected if None.
@@ -102,8 +71,6 @@ def load_model_from(source="base", device=None):
     Returns
     -------
     (model, processor)
-        The model has a ``nn.Sequential(Dropout(0.3), Linear)`` classifier head
-        attached for consistency across all training runs.
     """
     if device is None:
         device = get_device()
@@ -112,154 +79,241 @@ def load_model_from(source="base", device=None):
 
     print(f"📦  Loading model from: {model_id}")
     processor = AutoImageProcessor.from_pretrained(model_id)
-    model = AutoModelForImageClassification.from_pretrained(
-        model_id, ignore_mismatched_sizes=True
-    ).to(device)
-
+    
+    if source == "base" or model_id == BASE_MODEL_ID:
+        model = AutoModelForImageClassification.from_pretrained(
+            model_id,
+            num_labels=2,
+            id2label={0: "human", 1: "AI-generated"},
+            label2id={"human": 0, "AI-generated": 1},
+            ignore_mismatched_sizes=True
+        ).to(device)
+    else:
+        model = AutoModelForImageClassification.from_pretrained(
+            model_id, ignore_mismatched_sizes=True
+        ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"✅  Model loaded  –  {n_params:,} parameters  (device: {device})")
     return model, processor
 
 
-# ── GenImage label extraction ──────────────────────────────────────────────────
+# ── Zitacron dataset builder ──────────────────────────────────────────────────
 
-def extract_genimage_label(example):
-    """
-    Derive a binary label from the GenImage `image_path` field.
-
-    The GenImage dataset encodes the class in the file path:
-      - paths containing '/ai/' → label 1  (AI-generated)
-      - paths containing '/nature/' or '/real/' → label 0  (real / natural photo)
-
-    This mirrors the dima806 model convention: 0 = human, 1 = AI-generated.
-    """
-    path = (example.get("image_path") or "").lower()
-    if "/nature/" in path or "/real/" in path:
-        example["label"] = 0
-    else:
-        example["label"] = 1
-    return example
-
-
-# ── Streaming subset builder ──────────────────────────────────────────────────
-
-def build_genimage_subset(
-    train_per_class=1000,
-    val_per_class=250,
-    test_per_class=500,
+def build_zitacron_subset(
+    total_train=10000,
+    total_val=2000,
+    total_test=2000,
     seed=42,
     hf_token=None,
 ):
     """
-    Stream nebula/GenImage-arrow and collect a small balanced subset.
+    Load Zitacron/real-vs-ai-corpus and build a balanced subset.
 
-    We never download the full dataset – we iterate the stream and stop once
-    we have enough samples per class for each split.
+    Balancing strategy:
+      - Group by (source_dataset, label)
+      - Allocate equal quota per group per split
+      - If a group has fewer samples than its quota, take all and
+        redistribute the remainder proportionally
+
+    Only keeps columns: image, label, source_dataset.
 
     Returns
     -------
     DatasetDict  with splits 'train', 'validation', 'test'
     """
-    print("📡  Streaming GenImage-arrow (this may take a few minutes)…")
+    local_path = os.path.join("data", "zitacron_subset")
+    if os.path.exists(local_path):
+        print(f"📦  Loading cached Zitacron subset from {local_path}…")
+        from datasets import load_from_disk
+        return load_from_disk(local_path)
 
-    kwargs = {"streaming": True, "split": "train"}
-    if hf_token:
-        kwargs["token"] = hf_token
-    stream = load_dataset("nebula/GenImage-arrow", **kwargs)
-    stream = stream.shuffle(seed=seed, buffer_size=5000)
+    print("📡  Streaming Zitacron/real-vs-ai-corpus to build a balanced subset…")
+    from huggingface_hub import list_repo_files
+    import random
+    from datasets import Dataset
 
-    # ── peek at the first record so you can see the columns ──
-    first = None
-    for ex in stream:
-        first = ex
-        break
-    if first is None:
-        raise RuntimeError("GenImage stream returned no records.")
-    print(f"   Columns: {list(first.keys())}")
-    print(f"   Example image_path: {first.get('image_path', 'N/A')}")
+    # 1. Get the list of all parquet files
+    try:
+        files = list_repo_files("Zitacron/real-vs-ai-corpus", repo_type="dataset", token=hf_token)
+        parquet_files = [f for f in files if f.endswith(".parquet")]
+    except Exception as e:
+        print(f"❌ Error listing repository files: {e}")
+        print("Falling back to full dataset download (could be very slow)...")
+        # Fallback to the original full load behavior
+        kwargs = {}
+        if hf_token:
+            kwargs["token"] = hf_token
+        ds = load_dataset("Zitacron/real-vs-ai-corpus", **kwargs)
+        full_ds = ds["train"]
+        parquet_files = []
 
-    # ── quota per split ──
-    need = {
-        "train":      {"real": train_per_class, "ai": train_per_class},
-        "validation": {"real": val_per_class,   "ai": val_per_class},
-        "test":       {"real": test_per_class,  "ai": test_per_class},
+    if parquet_files:
+        # Shuffle the files list so we stream from a diverse set of shards
+        random.Random(seed).shuffle(parquet_files)
+
+        collected_samples = []
+        # We need total_train + total_val + total_test. Let's make sure we collect enough.
+        target_pool_size = (total_train + total_val + total_test) * 1.5
+        samples_per_shard = max(50, int(target_pool_size / len(parquet_files)) + 10)
+
+        print(f"   Found {len(parquet_files)} parquet shards. Collecting up to {samples_per_shard} samples per shard...")
+
+        from tqdm.auto import tqdm
+        
+        # Read from each parquet file in streaming mode
+        for file in tqdm(parquet_files, desc="Streaming Zitacron shards"):
+            try:
+                ds_shard = load_dataset(
+                    "Zitacron/real-vs-ai-corpus",
+                    data_files=file,
+                    split="train",
+                    streaming=True,
+                    token=hf_token
+                )
+                count = 0
+                for row in ds_shard:
+                    item = {
+                        "image": row["image"],
+                        "label": row["label"],
+                        "source_dataset": row["source_dataset"]
+                    }
+                    collected_samples.append(item)
+                    count += 1
+                    if count >= samples_per_shard:
+                        break
+            except Exception as e:
+                # If a shard fails to load, skip it
+                continue
+
+        print(f"   Collected {len(collected_samples)} raw samples from streaming.")
+        full_ds = Dataset.from_list(collected_samples)
+
+    # Keep only relevant columns
+    keep_cols = {"image", "label", "source_dataset"}
+    drop_cols = [c for c in full_ds.column_names if c not in keep_cols]
+    if drop_cols:
+        full_ds = full_ds.remove_columns(drop_cols)
+
+    # ── Discover source datasets ──
+    # Sample the source_dataset column to get unique values
+    source_datasets = sorted(set(full_ds["source_dataset"]))
+    n_sources = len(source_datasets)
+    print(f"   Found {n_sources} source datasets: {source_datasets}")
+
+    # ── Build indices grouped by label, and then by source_dataset ──
+    print("   Building class-balanced group indices…")
+    label_group_indices = {0: {}, 1: {}}
+    for idx in range(len(full_ds)):
+        src = full_ds[idx]["source_dataset"]
+        lbl = full_ds[idx]["label"]
+        if src not in label_group_indices[lbl]:
+            label_group_indices[lbl][src] = []
+        label_group_indices[lbl][src].append(idx)
+
+    # Shuffle each group
+    rng = np.random.RandomState(seed)
+    for lbl in (0, 1):
+        for src in label_group_indices[lbl]:
+            rng.shuffle(label_group_indices[lbl][src])
+
+    # ── Allocate samples per split enforcing strict class balance ──
+    splits_config = {
+        "train": total_train,
+        "validation": total_val,
+        "test": total_test,
     }
-    total_needed = sum(v for d in need.values() for v in d.values())
 
-    buckets = {split: {"real": [], "ai": []} for split in need}
-    collected = 0
+    split_indices = {"train": [], "validation": [], "test": []}
+    # Track consumed indices: {label: {source: index_offset}}
+    group_consumed = {
+        0: {src: 0 for src in label_group_indices[0]},
+        1: {src: 0 for src in label_group_indices[1]}
+    }
 
-    # Re-open the stream (iterators are single-pass)
-    stream = load_dataset("nebula/GenImage-arrow", **kwargs)
-    stream = stream.shuffle(seed=seed, buffer_size=5000)
+    for split_name, split_total in splits_config.items():
+        half_total = split_total // 2  # target per class (real vs AI)
+        split_collected = []
 
-    for example in stream:
-        example = extract_genimage_label(example)
-        cls = "real" if example["label"] == 0 else "ai"
+        for lbl in (0, 1):
+            sources_for_lbl = sorted(label_group_indices[lbl].keys())
+            n_sources_lbl = len(sources_for_lbl)
+            if n_sources_lbl == 0:
+                continue
 
-        for split in ("train", "validation", "test"):
-            if len(buckets[split][cls]) < need[split][cls]:
-                buckets[split][cls].append(example)
-                collected += 1
-                break
+            quota_per_source = half_total // n_sources_lbl
+            remainder = half_total - (quota_per_source * n_sources_lbl)
 
-        if collected % 500 == 0:
-            print(f"   collected {collected}/{total_needed}…")
-        if collected >= total_needed:
-            break
+            collected_lbl = []
+            deficit = 0
+            sources_with_room = []
 
-    # ── assemble HF Dataset objects ──
-    splits = {}
-    for split in ("train", "validation", "test"):
-        rows = buckets[split]["real"] + buckets[split]["ai"]
-        np.random.seed(seed)
-        np.random.shuffle(rows)
-        splits[split] = Dataset.from_list(rows)
-        print(f"   {split}: {len(splits[split])} samples "
-              f"(real={len(buckets[split]['real'])}, ai={len(buckets[split]['ai'])})")
+            # First pass: take up to quota from each source under this label
+            for src in sources_for_lbl:
+                available = label_group_indices[lbl][src][group_consumed[lbl][src]:]
+                take = min(quota_per_source, len(available))
+                start = group_consumed[lbl][src]
+                collected_lbl.extend(label_group_indices[lbl][src][start:start + take])
+                group_consumed[lbl][src] += take
+                if take < quota_per_source:
+                    deficit += (quota_per_source - take)
+                else:
+                    sources_with_room.append(src)
 
-    return DatasetDict(splits)
+            # Second pass: distribute remainder + deficit to sources with room under this label
+            extra_needed = remainder + deficit
+            if extra_needed > 0 and sources_with_room:
+                extra_per = extra_needed // len(sources_with_room)
+                extra_rem = extra_needed % len(sources_with_room)
+                for i, src in enumerate(sources_with_room):
+                    take_extra = extra_per + (1 if i < extra_rem else 0)
+                    available = label_group_indices[lbl][src][group_consumed[lbl][src]:]
+                    take = min(take_extra, len(available))
+                    start = group_consumed[lbl][src]
+                    collected_lbl.extend(label_group_indices[lbl][src][start:start + take])
+                    group_consumed[lbl][src] += take
+
+            split_collected.extend(collected_lbl)
+
+        rng.shuffle(split_collected)
+        split_indices[split_name] = split_collected
+
+    # ── Build Dataset objects ──
+    result = {}
+    for split_name in ("train", "validation", "test"):
+        indices = split_indices[split_name]
+        split_ds = full_ds.select(indices)
+
+        # Count label distribution
+        labels = split_ds["label"]
+        n_real = sum(1 for l in labels if l == 0)
+        n_ai = sum(1 for l in labels if l == 1)
+
+        # Count source distribution
+        sources = split_ds["source_dataset"]
+        source_counts = {}
+        for s in sources:
+            source_counts[s] = source_counts.get(s, 0) + 1
+
+        print(f"   {split_name}: {len(split_ds)} samples "
+              f"(real={n_real}, ai={n_ai})")
+        print(f"     Sources: { {k: v for k, v in sorted(source_counts.items())} }")
+
+        result[split_name] = split_ds
+
+    # Save the resulting DatasetDict to disk
+    result_dict = DatasetDict(result)
+    try:
+        os.makedirs("data", exist_ok=True)
+        print(f"💾  Saving balanced subset to disk at {local_path}…")
+        result_dict.save_to_disk(local_path)
+    except Exception as e:
+        print(f"⚠️ Warning: failed to save subset to disk: {e}")
+
+    return result_dict
 
 
-# ── julienlucas dataset loader ────────────────────────────────────────────────
-
-def load_julienlucas_dataset(val_ratio=0.1, seed=42, hf_token=None):
-    """
-    Load julienlucas/midjourney-dalle-sd-nanobananapro-dataset.
-
-    The dataset already has train/test splits with a 'label' column
-    (0 = real, 1 = AI-generated) — matching the dima806 convention.
-
-    If no validation split exists we carve one from training data.
-    """
-    kwargs = {}
-    if hf_token:
-        kwargs["token"] = hf_token
-    ds = load_dataset(
-        "julienlucas/midjourney-dalle-sd-nanobananapro-dataset", **kwargs
-    )
-    print(f"✅  julienlucas dataset loaded  –  splits: {list(ds.keys())}")
-    for s in ds:
-        print(f"   {s}: {len(ds[s])} samples")
-
-    if "validation" not in ds:
-        split = ds["train"].train_test_split(test_size=val_ratio, seed=seed)
-        ds = DatasetDict({
-            "train": split["train"],
-            "validation": split["test"],
-            "test": ds["test"],
-        })
-        print(f"   → created validation split ({len(ds['validation'])} samples)")
-
-    # Confirm label column
-    sample = ds["train"][0]
-    print(f"   Label column present: {'label' in sample}")
-    print(f"   Sample label value : {sample.get('label')}")
-    return ds
-
-
-# ── Preprocessing (shared for both datasets) ──────────────────────────────────
+# ── Preprocessing (shared) ────────────────────────────────────────────────────
 
 def make_transform(processor):
     """
@@ -270,7 +324,7 @@ def make_transform(processor):
         images = examples["image"]
         if not isinstance(images, list):
             images = [images]
-        # Handle raw bytes (e.g. GenImage) as well as PIL Image objects
+        # Handle raw bytes as well as PIL Image objects
         converted = []
         for img in images:
             if isinstance(img, bytes):
@@ -292,6 +346,10 @@ def make_augmented_transform(processor):
       - Random horizontal flip (50 %)
       - Random JPEG re-compression at quality 50-95 (30 %)
       - Random brightness / contrast jitter ±20 % (30 %)
+      - Random rotation ±15° (30 %)
+      - Random crop + resize (30 %)
+      - Random Gaussian blur (20 %)
+      - Random color/saturation jitter (30 %)
     """
     import random
     from PIL import ImageEnhance
@@ -310,12 +368,12 @@ def make_augmented_transform(processor):
             img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
             img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
         
-        # NEW: Random rotation (small angles — real photos are rarely perfectly level)
+        # Random rotation (small angles — real photos are rarely perfectly level)
         if random.random() < 0.3:
             angle = random.uniform(-15, 15)
             img = img.rotate(angle, fillcolor=(128, 128, 128))
        
-        # NEW: Random crop + resize (simulates different crops/shares of the same image)
+        # Random crop + resize (simulates different crops/shares of the same image)
         if random.random() < 0.3:
             w, h = img.size
             crop_ratio = random.uniform(0.8, 1.0)
@@ -325,13 +383,13 @@ def make_augmented_transform(processor):
             img = img.crop((left, top, left + new_w, top + new_h))
             img = img.resize((w, h), Image.BILINEAR)
         
-        # NEW: Random Gaussian blur (simulates real camera blur/social media compression)
+        # Random Gaussian blur (simulates real camera blur/social media compression)
         if random.random() < 0.2:
             from PIL import ImageFilter
             radius = random.uniform(0.5, 1.5)
             img = img.filter(ImageFilter.GaussianBlur(radius=radius))
         
-        # NEW: Color jitter (saturation + hue)
+        # Color jitter (saturation + hue)
         if random.random() < 0.3:
             img = ImageEnhance.Color(img).enhance(random.uniform(0.7, 1.3))
         
@@ -384,22 +442,17 @@ def run_training_stage(
     fp16=False,
     replay_ds=None,
     replay_ratio=0.25,
-    freeze_layers=None,
     augment=False,
     weight_decay=0.05,
     early_stopping_patience=2,
 ):
     """
-    Fine-tune *model* on *train_ds* / *eval_ds* and save to *output_dir*.
+    Train *model* on *train_ds* / *eval_ds* and save to *output_dir*.
 
     If *replay_ds* is provided, a random subset (sized as *replay_ratio* ×
     len(train_ds)) is drawn from it and concatenated with *train_ds* before
     training.  This implements **experience replay** to mitigate catastrophic
-    forgetting when fine-tuning across sequential stages.
-
-    If *freeze_layers* is set (e.g. 10), the first N ViT encoder layers plus
-    the embedding layer are frozen so the model retains its general visual
-    features and only the top layers + classifier head are updated.
+    forgetting when training across sequential stages.
 
     If *augment* is True, training images receive random flips, colour
     jitter, and JPEG re-compression to improve generalisation.
@@ -444,10 +497,6 @@ def run_training_stage(
         print(f"  🔁  Experience replay: added {len(replay_subset)} samples "
               f"from previous stage ({replay_ratio:.0%} ratio) [balanced 50/50]")
         print(f"  📊  Combined training set: {len(train_ds)} samples")
-
-    # ── Layer freezing: preserve general features, adapt only top layers ──
-    if freeze_layers is not None:
-        freeze_encoder_layers(model, num_layers_to_freeze=freeze_layers)
 
     # Apply transforms (with optional augmentation for training)
     if augment:
@@ -521,7 +570,7 @@ def evaluate_model(
 
     Parameters
     ----------
-    output_prefix : str   e.g. 'genimage_stage1' — used for file naming.
+    output_prefix : str   e.g. 'zitacron_stage1' — used for file naming.
     """
     import matplotlib
     matplotlib.use("Agg")
