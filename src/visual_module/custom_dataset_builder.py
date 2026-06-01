@@ -1,16 +1,3 @@
-"""
-two_stage_finetuning.py
-========================
-Helper utilities for the fine-tuning notebook.
-
-Provides dataset loading (Zitacron/real-vs-ai-corpus), preprocessing,
-augmentation, training, and evaluation helpers for training a
-ConvNeXt V2-based AI-vs-real image classifier.
-
-This module is imported by the notebook; all heavy lifting lives here so
-the notebook stays beginner-friendly.
-"""
-
 import os, json, io, torch, numpy as np
 from PIL import Image
 from datasets import load_dataset, Dataset, DatasetDict, concatenate_datasets
@@ -26,6 +13,230 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
 )
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+import os
+import random
+import uuid
+import collections
+import glob
+from datasets import load_dataset, Dataset, DatasetDict, Image as HFImage
+from tqdm.auto import tqdm
+
+# ── Data Puller Mini-Functions ────────────────────────────────────────────────
+
+def pull_from_repo(repo, config, limit, output_dir, fixed_label=None, label_col="label"):
+    """
+    Generic mini-function to pull `limit` images from a HuggingFace repository.
+    Saves them locally to `output_dir` as JPEGs.
+    """
+    samples = []
+    print(f"📡 Pulling up to {limit} images from {repo}...")
+    try:
+        if config:
+            ds = load_dataset(repo, config, streaming=True, split="train")
+        else:
+            ds = load_dataset(repo, streaming=True, split="train")
+    except Exception as e:
+        print(f"   ⚠️ Failed to load {repo}: {e}")
+        return samples
+        
+    for i, row in enumerate(ds):
+        if len(samples) >= limit:
+            break
+            
+        if i > 0 and i % 500 == 0:
+            print(f"   ... streamed {i} rows ...")
+        # Determine label (0 = Real, 1 = AI)
+        if fixed_label is not None:
+            lbl = fixed_label
+        else:
+            lbl = row.get(label_col)
+            
+        if lbl not in [0, 1]:
+            continue
+            
+        # Find the image column
+        img_obj = None
+        for col in ["image", "img", "photo"]:
+            if col in row:
+                img_obj = row[col]
+                break
+                
+        if not img_obj:
+            continue
+            
+        # Save to disk
+        repo_safe = repo.replace("/", "_")
+        src_dir = os.path.join(output_dir, repo_safe)
+        os.makedirs(src_dir, exist_ok=True)
+        file_path = os.path.join(src_dir, f"{uuid.uuid4().hex}.jpg")
+        
+        try:
+            if hasattr(img_obj, "save"):
+                if img_obj.mode in ("RGBA", "P"):
+                    img_obj = img_obj.convert("RGB")
+                img_obj.save(file_path, format="JPEG", quality=90)
+            elif isinstance(img_obj, dict) and "bytes" in img_obj:
+                with open(file_path, "wb") as f:
+                    f.write(img_obj["bytes"])
+            elif isinstance(img_obj, bytes):
+                with open(file_path, "wb") as f:
+                    f.write(img_obj)
+            else:
+                continue # Unknown format
+                
+            samples.append({
+                "image": file_path,
+                "label": lbl,
+                "source_dataset": repo
+            })
+        except Exception:
+            continue
+            
+    print(f"   ✅ Collected {len(samples)} images.")
+    return samples
+
+# Mini-functions for each dataset
+def pull_ronantakizawa_webui(limit, out_dir): return pull_from_repo("ronantakizawa/webui", None, limit, out_dir, fixed_label=0)
+def pull_derek_thomas_scienceqa(limit, out_dir): return pull_from_repo("derek-thomas/ScienceQA", None, limit, out_dir, fixed_label=0)
+def pull_skylenage_deepvision(limit, out_dir): return pull_from_repo("skylenage/DeepVision-103K", "visual_logic", limit, out_dir, fixed_label=0)
+def pull_mbzuai_openearthagent(limit, out_dir): return pull_from_repo("MBZUAI/OpenEarthAgent", None, limit, out_dir, fixed_label=0)
+def pull_epfl_eceo_coralscapes(limit, out_dir): return pull_from_repo("EPFL-ECEO/coralscapes", None, limit, out_dir, fixed_label=0)
+def pull_opendatalab_omnidocbench(limit, out_dir): return pull_from_repo("opendatalab/OmniDocBench", None, limit, out_dir, fixed_label=0)
+def pull_sigurdur_isl_finepdfs(limit, out_dir): return pull_from_repo("Sigurdur/isl-finepdfs-images", None, limit, out_dir, fixed_label=0)
+
+def pull_svjack_diffusiondb(limit, out_dir): return pull_from_repo("svjack/diffusiondb_random_10k", None, limit, out_dir, fixed_label=1)
+def pull_bitmind_nanobanana(limit, out_dir): return pull_from_repo("bitmind/nano-banana", None, limit, out_dir, fixed_label=1)
+def pull_ash12321_nanobananapro(limit, out_dir): return pull_from_repo("ash12321/nano-banana-pro-generated-1k", None, limit, out_dir, fixed_label=1)
+def pull_abstractphil_synthetic(limit, out_dir): return pull_from_repo("AbstractPhil/synthetic-characters", "SDXL", limit, out_dir, fixed_label=1)
+def pull_lucasfang_fluxreason(limit, out_dir): return pull_from_repo("LucasFang/FLUX-Reason-6M", None, limit, out_dir, fixed_label=1)
+
+def pull_parveshiiii_aivsreal(limit, out_dir): return pull_from_repo("Parveshiiii/AI-vs-Real", None, limit, out_dir, fixed_label=None, label_col="binary_label")
+def pull_julienlucas_midjourney(limit, out_dir): return pull_from_repo("julienlucas/midjourney-dalle-sd-nanobananapro-dataset", None, limit, out_dir, fixed_label=None, label_col="label")
+
+
+# ── Main Builder ──────────────────────────────────────────────────────────────
+
+def build_custom_dataset(
+    total_train=10000,
+    total_val=2000,
+    total_test=2000,
+    seed=42,
+    hf_token=None,  # kept for signature compatibility
+):
+    """
+    Builds the dataset directly from the source repositories, entirely bypassing the Zitacron mega-corpus.
+    Downloads locally to data/custom_dataset to ensure blistering fast speeds.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    local_path = os.path.join(base_dir, "..", "..", "data", "custom_subset")
+    images_dir = os.path.join(base_dir, "..", "..", "data", "custom_dataset")
+    
+    if os.path.exists(local_path):
+        print(f"📦 Loading cached Custom subset from {local_path}…")
+        from datasets import load_from_disk
+        return load_from_disk(local_path)
+
+    os.makedirs(images_dir, exist_ok=True)
+    
+    total_images = total_train + total_val + total_test
+    target_real = total_images // 2
+    target_ai = total_images - target_real
+    
+    # We ask each dataset for ~1500 images to ensure we have a massive pool to select our 50/50 mix from.
+    limit_per_source = 1500 
+    
+    all_pullers = [
+        pull_ronantakizawa_webui,
+        pull_derek_thomas_scienceqa,
+        pull_mbzuai_openearthagent,
+        pull_epfl_eceo_coralscapes,
+        pull_opendatalab_omnidocbench,
+        pull_sigurdur_isl_finepdfs,
+        pull_svjack_diffusiondb,
+        pull_bitmind_nanobanana,
+        pull_ash12321_nanobananapro,
+        pull_abstractphil_synthetic,
+        pull_lucasfang_fluxreason,
+        pull_parveshiiii_aivsreal,
+        pull_julienlucas_midjourney
+    ]
+    
+    collected_real = []
+    collected_ai = []
+    
+    for puller in all_pullers:
+        samples = puller(limit_per_source, images_dir)
+        for s in samples:
+            if s["label"] == 0:
+                collected_real.append(s)
+            else:
+                collected_ai.append(s)
+                
+    print(f"\n📊 Total Downloaded: {len(collected_real)} Real, {len(collected_ai)} AI")
+    
+    if len(collected_real) < target_real or len(collected_ai) < target_ai:
+        print(f"⚠️ WARNING: Did not collect enough images! Requested {target_real}/{target_ai}, got {len(collected_real)}/{len(collected_ai)}")
+        target_real = min(target_real, len(collected_real))
+        target_ai = min(target_ai, len(collected_ai))
+        
+    rng = random.Random(seed)
+    rng.shuffle(collected_real)
+    rng.shuffle(collected_ai)
+    
+    # Slice exact requested totals
+    final_real = collected_real[:target_real]
+    final_ai = collected_ai[:target_ai]
+    
+    print("\n🔀 Distributing into Train, Validation, and Test (Exactly 50% Real / 50% AI)...")
+    
+    val_real_count = total_val // 2
+    val_ai_count = total_val - val_real_count
+    test_real_count = total_test // 2
+    test_ai_count = total_test - test_real_count
+    
+    val_list = final_real[:val_real_count] + final_ai[:val_ai_count]
+    test_list = final_real[val_real_count : val_real_count+test_real_count] + final_ai[val_ai_count : val_ai_count+test_ai_count]
+    train_list = final_real[val_real_count+test_real_count:] + final_ai[val_ai_count+test_ai_count:]
+    
+    rng.shuffle(train_list)
+    rng.shuffle(val_list)
+    rng.shuffle(test_list)
+    
+    splits_data = {
+        "train": train_list,
+        "validation": val_list,
+        "test": test_list
+    }
+    
+    result = {}
+    for split_name, samples in splits_data.items():
+        if not samples: continue
+        split_ds = Dataset.from_list(samples)
+        try:
+            split_ds = split_ds.cast_column("image", HFImage())
+        except Exception:
+            pass
+            
+        labels = split_ds["label"]
+        n_real = sum(1 for l in labels if l == 0)
+        n_ai = sum(1 for l in labels if l == 1)
+        
+        print(f"   {split_name}: {len(split_ds)} samples (real={n_real}, ai={n_ai})")
+        result[split_name] = split_ds
+
+    result_dict = DatasetDict(result)
+    try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        print(f"💾 Saving final subset to disk at {local_path}…")
+        result_dict.save_to_disk(local_path)
+    except Exception as e:
+        print(f"⚠️ Warning: failed to save subset to disk: {e}")
+
+    return result_dict
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -51,7 +262,7 @@ def compute_metrics(eval_pred):
 
 # ── Model loader ───────────────────────────────────────────────────────────────
 
-BASE_MODEL_ID = "facebook/convnextv2-large-22k-224"
+BASE_MODEL_ID = "facebook/convnextv2-base-22k-384"
 
 
 def load_model_from(source="base", device=None):
@@ -62,7 +273,7 @@ def load_model_from(source="base", device=None):
     ----------
     source : str
         One of:
-        - ``"base"`` → load the facebook/convnextv2-large-22k-224 HuggingFace model
+        - ``"base"`` → load the facebook/convnextv2-base-22k-384 HuggingFace model
         - A local directory path (e.g. ``"outputs/models/run_01_zitacron"``)
         - A HuggingFace model ID
     device : torch.device or None
@@ -98,223 +309,8 @@ def load_model_from(source="base", device=None):
     return model, processor
 
 
-# ── Zitacron dataset builder ──────────────────────────────────────────────────
-
-def build_zitacron_subset(
-    total_train=10000,
-    total_val=2000,
-    total_test=2000,
-    seed=42,
-    hf_token=None,
-):
-    """
-    Load Zitacron/real-vs-ai-corpus and build a balanced subset.
-
-    Balancing strategy:
-      - Group by (source_dataset, label)
-      - Allocate equal quota per group per split
-      - If a group has fewer samples than its quota, take all and
-        redistribute the remainder proportionally
-
-    Only keeps columns: image, label, source_dataset.
-
-    Returns
-    -------
-    DatasetDict  with splits 'train', 'validation', 'test'
-    """
-    local_path = os.path.join("data", "zitacron_subset")
-    if os.path.exists(local_path):
-        print(f"📦  Loading cached Zitacron subset from {local_path}…")
-        from datasets import load_from_disk
-        return load_from_disk(local_path)
-
-    print("📡  Streaming Zitacron/real-vs-ai-corpus to build a balanced subset…")
-    from huggingface_hub import list_repo_files
-    import random
-    from datasets import Dataset
-
-    # 1. Get the list of all parquet files
-    try:
-        files = list_repo_files("Zitacron/real-vs-ai-corpus", repo_type="dataset", token=hf_token)
-        parquet_files = [f for f in files if f.endswith(".parquet")]
-    except Exception as e:
-        print(f"❌ Error listing repository files: {e}")
-        print("Falling back to full dataset download (could be very slow)...")
-        # Fallback to the original full load behavior
-        kwargs = {}
-        if hf_token:
-            kwargs["token"] = hf_token
-        ds = load_dataset("Zitacron/real-vs-ai-corpus", **kwargs)
-        full_ds = ds["train"]
-        parquet_files = []
-
-    if parquet_files:
-        # Shuffle the files list so we stream from a diverse set of shards
-        random.Random(seed).shuffle(parquet_files)
-
-        collected_samples = []
-        # We need total_train + total_val + total_test. Let's make sure we collect enough.
-        target_pool_size = (total_train + total_val + total_test) * 1.5
-        samples_per_shard = max(50, int(target_pool_size / len(parquet_files)) + 10)
-
-        print(f"   Found {len(parquet_files)} parquet shards. Collecting up to {samples_per_shard} samples per shard...")
-
-        from tqdm.auto import tqdm
-        
-        # Read from each parquet file in streaming mode
-        for file in tqdm(parquet_files, desc="Streaming Zitacron shards"):
-            try:
-                ds_shard = load_dataset(
-                    "Zitacron/real-vs-ai-corpus",
-                    data_files=file,
-                    split="train",
-                    streaming=True,
-                    token=hf_token
-                )
-                count = 0
-                for row in ds_shard:
-                    item = {
-                        "image": row["image"],
-                        "label": row["label"],
-                        "source_dataset": row["source_dataset"]
-                    }
-                    collected_samples.append(item)
-                    count += 1
-                    if count >= samples_per_shard:
-                        break
-            except Exception as e:
-                # If a shard fails to load, skip it
-                continue
-
-        print(f"   Collected {len(collected_samples)} raw samples from streaming.")
-        full_ds = Dataset.from_list(collected_samples)
-
-    # Keep only relevant columns
-    keep_cols = {"image", "label", "source_dataset"}
-    drop_cols = [c for c in full_ds.column_names if c not in keep_cols]
-    if drop_cols:
-        full_ds = full_ds.remove_columns(drop_cols)
-
-    # ── Discover source datasets ──
-    # Sample the source_dataset column to get unique values
-    source_datasets = sorted(set(full_ds["source_dataset"]))
-    n_sources = len(source_datasets)
-    print(f"   Found {n_sources} source datasets: {source_datasets}")
-
-    # ── Build indices grouped by label, and then by source_dataset ──
-    print("   Building class-balanced group indices…")
-    label_group_indices = {0: {}, 1: {}}
-    for idx in range(len(full_ds)):
-        src = full_ds[idx]["source_dataset"]
-        lbl = full_ds[idx]["label"]
-        if src not in label_group_indices[lbl]:
-            label_group_indices[lbl][src] = []
-        label_group_indices[lbl][src].append(idx)
-
-    # Shuffle each group
-    rng = np.random.RandomState(seed)
-    for lbl in (0, 1):
-        for src in label_group_indices[lbl]:
-            rng.shuffle(label_group_indices[lbl][src])
-
-    # ── Allocate samples per split enforcing strict class balance ──
-    splits_config = {
-        "train": total_train,
-        "validation": total_val,
-        "test": total_test,
-    }
-
-    split_indices = {"train": [], "validation": [], "test": []}
-    # Track consumed indices: {label: {source: index_offset}}
-    group_consumed = {
-        0: {src: 0 for src in label_group_indices[0]},
-        1: {src: 0 for src in label_group_indices[1]}
-    }
-
-    for split_name, split_total in splits_config.items():
-        half_total = split_total // 2  # target per class (real vs AI)
-        split_collected = []
-
-        for lbl in (0, 1):
-            sources_for_lbl = sorted(label_group_indices[lbl].keys())
-            n_sources_lbl = len(sources_for_lbl)
-            if n_sources_lbl == 0:
-                continue
-
-            quota_per_source = half_total // n_sources_lbl
-            remainder = half_total - (quota_per_source * n_sources_lbl)
-
-            collected_lbl = []
-            deficit = 0
-            sources_with_room = []
-
-            # First pass: take up to quota from each source under this label
-            for src in sources_for_lbl:
-                available = label_group_indices[lbl][src][group_consumed[lbl][src]:]
-                take = min(quota_per_source, len(available))
-                start = group_consumed[lbl][src]
-                collected_lbl.extend(label_group_indices[lbl][src][start:start + take])
-                group_consumed[lbl][src] += take
-                if take < quota_per_source:
-                    deficit += (quota_per_source - take)
-                else:
-                    sources_with_room.append(src)
-
-            # Second pass: distribute remainder + deficit to sources with room under this label
-            extra_needed = remainder + deficit
-            if extra_needed > 0 and sources_with_room:
-                extra_per = extra_needed // len(sources_with_room)
-                extra_rem = extra_needed % len(sources_with_room)
-                for i, src in enumerate(sources_with_room):
-                    take_extra = extra_per + (1 if i < extra_rem else 0)
-                    available = label_group_indices[lbl][src][group_consumed[lbl][src]:]
-                    take = min(take_extra, len(available))
-                    start = group_consumed[lbl][src]
-                    collected_lbl.extend(label_group_indices[lbl][src][start:start + take])
-                    group_consumed[lbl][src] += take
-
-            split_collected.extend(collected_lbl)
-
-        rng.shuffle(split_collected)
-        split_indices[split_name] = split_collected
-
-    # ── Build Dataset objects ──
-    result = {}
-    for split_name in ("train", "validation", "test"):
-        indices = split_indices[split_name]
-        split_ds = full_ds.select(indices)
-
-        # Count label distribution
-        labels = split_ds["label"]
-        n_real = sum(1 for l in labels if l == 0)
-        n_ai = sum(1 for l in labels if l == 1)
-
-        # Count source distribution
-        sources = split_ds["source_dataset"]
-        source_counts = {}
-        for s in sources:
-            source_counts[s] = source_counts.get(s, 0) + 1
-
-        print(f"   {split_name}: {len(split_ds)} samples "
-              f"(real={n_real}, ai={n_ai})")
-        print(f"     Sources: { {k: v for k, v in sorted(source_counts.items())} }")
-
-        result[split_name] = split_ds
-
-    # Save the resulting DatasetDict to disk
-    result_dict = DatasetDict(result)
-    try:
-        os.makedirs("data", exist_ok=True)
-        print(f"💾  Saving balanced subset to disk at {local_path}…")
-        result_dict.save_to_disk(local_path)
-    except Exception as e:
-        print(f"⚠️ Warning: failed to save subset to disk: {e}")
-
-    return result_dict
-
 
 # ── Preprocessing (shared) ────────────────────────────────────────────────────
-
 def make_transform(processor):
     """
     Return a batched transform function compatible with HF Trainer.
@@ -327,6 +323,8 @@ def make_transform(processor):
         # Handle raw bytes as well as PIL Image objects
         converted = []
         for img in images:
+            if isinstance(img, dict) and "bytes" in img:
+                img = img["bytes"]
             if isinstance(img, bytes):
                 img = Image.open(io.BytesIO(img))
             img = img.convert("RGB")
@@ -401,6 +399,8 @@ def make_augmented_transform(processor):
             images = [images]
         converted = []
         for img in images:
+            if isinstance(img, dict) and "bytes" in img:
+                img = img["bytes"]
             if isinstance(img, bytes):
                 img = Image.open(io.BytesIO(img))
             img = img.convert("RGB")

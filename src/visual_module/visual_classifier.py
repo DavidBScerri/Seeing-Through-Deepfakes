@@ -7,7 +7,7 @@ import numpy as np
 class VisualClassifier:
     def __init__(
         self,
-        model_name_or_path="facebook/convnextv2-large-22k-224",
+        model_name_or_path="facebook/convnextv2-base-22k-384",
         delta_path=None,
     ):
         """
@@ -87,7 +87,7 @@ class VisualClassifier:
 
 def save_weight_delta(
     fine_tuned_model,
-    base_model_name="facebook/convnextv2-large-22k-224",
+    base_model_name="facebook/convnextv2-base-22k-384",
     output_path="./fine_tuned_model_delta/weight_delta.pt",
     threshold: float = 1e-9,
 ):
@@ -124,7 +124,10 @@ def save_weight_delta(
     unchanged = []
     for key in ft_state:
         ft_param   = ft_state[key]
-        base_param = base_state[key] if key in base_state else torch.zeros_like(ft_param)
+        if key in base_state and base_state[key].shape == ft_param.shape:
+            base_param = base_state[key]
+        else:
+            base_param = torch.zeros_like(ft_param)
         diff       = ft_param - base_param
         max_abs    = diff.abs().max().item()
         if max_abs < threshold:
@@ -203,7 +206,7 @@ def compute_metrics(eval_pred):
     }
 
 def fine_tune_model(
-    model_name="facebook/convnextv2-large-22k-224",
+    model_name="facebook/convnextv2-base-22k-384",
     dataset_name="Zitacron/real-vs-ai-corpus",
     output_dir="./fine_tuned_model",
     epochs=3,
