@@ -1,8 +1,7 @@
 import os
 import torch
-from transformers import AutoImageProcessor, AutoModelForImageClassification, TrainingArguments, Trainer
-from datasets import load_dataset
-import numpy as np
+from transformers import AutoImageProcessor, AutoModelForImageClassification
+
 
 class VisualClassifier:
     def __init__(
@@ -168,104 +167,3 @@ def load_weight_delta(model, delta_path, device=None):
         state[target_key] = (state[target_key].float() + diff).to(state[target_key].dtype)
 
     model.load_state_dict(state)
-
-
-def compute_metrics(eval_pred):
-    from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-    logits, labels = eval_pred
-    predictions = np.argmax(logits, axis=-1)
-    
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='binary')
-    acc = accuracy_score(labels, predictions)
-    
-    return {
-        'accuracy': acc,
-        'f1': f1,
-        'precision': precision,
-        'recall': recall
-    }
-
-def fine_tune_model(
-    model_name="dima806/ai_vs_human_generated_image_detection",
-    dataset_name="../../data/visual/combined_dataset",
-    output_dir="./fine_tuned_model",
-    epochs=3,
-    batch_size=16,
-    learning_rate=2e-5
-):
-    """Fine-tunes the image classification model on the provided dataset."""
-    from datasets import load_from_disk
-    print(f"Loading dataset: {dataset_name}")
-    
-    if os.path.exists(dataset_name):
-        dataset = load_from_disk(dataset_name)
-    else:
-        dataset = load_dataset(dataset_name)
-        
-    train_ds = dataset['train']
-    test_ds = dataset['validation'] if 'validation' in dataset else dataset['test']
-    
-    processor = AutoImageProcessor.from_pretrained(model_name)
-    model = AutoModelForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True)
-    
-    def transforms(examples):
-        images = examples["image"] if isinstance(examples["image"], list) else [examples["image"]]
-        images = [img.convert("RGB") for img in images]
-        
-        inputs = processor(images, return_tensors="pt")
-        inputs["labels"] = examples["label"]
-        return inputs
-        
-    print("Applying transformations...")
-    train_ds.set_transform(transforms)
-    test_ds.set_transform(transforms)
-    
-
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        remove_unused_columns=False,
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        learning_rate=learning_rate,
-        per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=4,
-        per_device_eval_batch_size=batch_size,
-        num_train_epochs=epochs,
-        warmup_steps=0.1,
-        logging_steps=10,
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        push_to_hub=False,
-    )
-    
-    def collate_fn(examples):
-        pixel_values = []
-        for example in examples:
-            pv = example["pixel_values"]
-            if isinstance(pv, list):
-                pv = torch.tensor(pv)
-            pixel_values.append(pv)
-        pixel_values = torch.stack(pixel_values)
-        labels = torch.tensor([example["labels"] for example in examples])
-        return {"pixel_values": pixel_values, "labels": labels}
-    
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        data_collator=collate_fn,
-        train_dataset=train_ds,
-        eval_dataset=test_ds,
-        processing_class=processor,
-        compute_metrics=compute_metrics,
-    )
-    
-    print("Starting training...")
-    train_results = trainer.train()
-    
-    print("Saving model...")
-    trainer.save_model()
-    trainer.log_metrics("train", train_results.metrics)
-    trainer.save_metrics("train", train_results.metrics)
-    trainer.save_state()
-    
-    return model, processor
