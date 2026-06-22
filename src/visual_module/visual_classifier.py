@@ -7,7 +7,7 @@ import numpy as np
 class VisualClassifier:
     def __init__(
         self,
-        model_name_or_path="dima806/ai_vs_real_image_detection",
+        model_name_or_path="dima806/ai_vs_human_generated_image_detection",
         delta_path=None,
     ):
         """
@@ -186,7 +186,7 @@ def compute_metrics(eval_pred):
     }
 
 def fine_tune_model(
-    model_name="dima806/ai_vs_real_image_detection",
+    model_name="dima806/ai_vs_human_generated_image_detection",
     dataset_name="../../data/visual/combined_dataset",
     output_dir="./fine_tuned_model",
     epochs=3,
@@ -204,7 +204,6 @@ def fine_tune_model(
         
     train_ds = dataset['train']
     test_ds = dataset['validation'] if 'validation' in dataset else dataset['test']
-    max_train_samples = len(train_ds)
     
     processor = AutoImageProcessor.from_pretrained(model_name)
     model = AutoModelForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True)
@@ -221,10 +220,7 @@ def fine_tune_model(
     train_ds.set_transform(transforms)
     test_ds.set_transform(transforms)
     
-    gradient_accumulation_steps = 4
-    steps_per_epoch = max_train_samples // (batch_size * gradient_accumulation_steps)
-    max_steps = -1
-    
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         remove_unused_columns=False,
@@ -232,10 +228,9 @@ def fine_tune_model(
         save_strategy="epoch",
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_accumulation_steps=4,
         per_device_eval_batch_size=batch_size,
         num_train_epochs=epochs,
-        max_steps=max_steps,
         warmup_steps=0.1,
         logging_steps=10,
         load_best_model_at_end=True,

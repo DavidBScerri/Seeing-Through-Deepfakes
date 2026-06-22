@@ -350,7 +350,7 @@ def analyse_folder(folder_path: str, extensions: tuple[str, ...] = (".jpg", ".jp
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python metadata.py <image_path>")
+        print("Usage: python metadata_extraction.py <image_path>")
         sys.exit(1)
 
     try:

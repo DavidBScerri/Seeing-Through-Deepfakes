@@ -1,6 +1,6 @@
 """
-Helper utilities for the two-stage fine-tuning notebook.
-Stage 1: fine-tune on GenImage, Stage 2: continue on julienlucas.
+Helper utilities for multi-stage ViT fine-tuning.
+Used by visual_classifier_finetuning.ipynb.
 """
 
 import os, json, io, torch, numpy as np
@@ -65,7 +65,7 @@ def freeze_encoder_layers(model, num_layers_to_freeze=10):
           f"({100 * trainable / total:.1f}%)")
 
 
-BASE_MODEL_ID = "dima806/ai_vs_real_image_detection"
+BASE_MODEL_ID = "dima806/ai_vs_human_generated_image_detection"
 
 
 def load_model_from(source="base", device=None):
