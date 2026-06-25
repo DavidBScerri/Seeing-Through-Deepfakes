@@ -48,13 +48,15 @@ class DeepfakeClassifier:
 
         Returns:
             dict with keys ``label``, ``confidence``, and ``bbox``.
+            Confidence is clamped to [0.0001, 0.9999] to avoid
+            degenerate 0.0 or 1.0 values.
         """
         boxes, probs = self.mtcnn.detect(image)
         if boxes is None or len(boxes) == 0:
-            return {"label": "No Face", "confidence": 0.0, "bbox": None}
+            return {"label": "No Face", "confidence": 0.0001, "bbox": None}
         
         idx = int(np.argmax(probs))
-        face_certainty = float(probs[idx])
+        face_certainty = float(np.clip(probs[idx], 0.0001, 0.9999))
         
         if face_certainty < 0.90:
             return {"label": "No Face", "confidence": round(face_certainty, 4), "bbox": None}
