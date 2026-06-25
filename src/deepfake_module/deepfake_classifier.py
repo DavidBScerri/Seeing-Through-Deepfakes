@@ -2,10 +2,29 @@ import os
 import torch
 from transformers import AutoImageProcessor
 import numpy as np
+import cv2
 import faiss
 import json
 from PIL import Image
-from facenet_pytorch import MTCNN
+
+
+def _get_yunet_model_path():
+    """Returns the path to the YuNet ONNX model, downloading it if necessary."""
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(module_dir, "models", "face_detection_yunet_2023mar.onnx")
+
+    if not os.path.exists(model_path):
+        import urllib.request
+        url = (
+            "https://github.com/opencv/opencv_zoo/raw/main/"
+            "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+        )
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        print(f"Downloading YuNet model to {model_path} …")
+        urllib.request.urlretrieve(url, model_path)
+        print("Download complete.")
+
+    return model_path
 
 
 class DeepfakeClassifier:
@@ -28,8 +47,17 @@ class DeepfakeClassifier:
             else "cpu"
         )
 
-        print("Loading Face Detection model: MTCNN")
-        self.mtcnn = MTCNN(keep_all=True, device='cpu')
+        print("Loading Face Detection model: YuNet (OpenCV FaceDetectorYN)")
+        yunet_path = _get_yunet_model_path()
+        # Initialise with a placeholder input size; updated per-image in predict_face
+        self.face_detector = cv2.FaceDetectorYN.create(
+            model=yunet_path,
+            config="",
+            input_size=(320, 320),
+            score_threshold=0.5,
+            nms_threshold=0.3,
+            top_k=5000,
+        )
 
         print(f"Loading Landmark Retrieval model: {landmark_model_name}")
         self.landmark_index = LandmarkIndex(
@@ -41,7 +69,7 @@ class DeepfakeClassifier:
 
     def predict_face(self, image):
         """
-        Detects whether a face is present in the image.
+        Detects whether a face is present in the image using YuNet.
 
         Args:
             image: A PIL Image object.
@@ -51,17 +79,29 @@ class DeepfakeClassifier:
             Confidence is clamped to [0.0001, 0.9999] to avoid
             degenerate 0.0 or 1.0 values.
         """
-        boxes, probs = self.mtcnn.detect(image)
-        if boxes is None or len(boxes) == 0:
+        # Convert PIL → OpenCV BGR
+        img_rgb = np.array(image.convert("RGB"))
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        h, w = img_bgr.shape[:2]
+
+        # Update input size to match this image
+        self.face_detector.setInputSize((w, h))
+        _, faces = self.face_detector.detect(img_bgr)
+
+        if faces is None or len(faces) == 0:
             return {"label": "No Face", "confidence": 0.0001, "bbox": None}
-        
-        idx = int(np.argmax(probs))
-        face_certainty = float(np.clip(probs[idx], 0.0001, 0.9999))
-        
+
+        # YuNet output: each row is [x, y, w, h, ..., score] — score at index 14
+        scores = faces[:, 14]
+        idx = int(np.argmax(scores))
+        face_certainty = float(np.clip(scores[idx], 0.0001, 0.9999))
+
         if face_certainty < 0.90:
             return {"label": "No Face", "confidence": round(face_certainty, 4), "bbox": None}
 
-        bbox = [float(x) for x in boxes[idx]]
+        # Convert (x, y, w, h) → (x1, y1, x2, y2)
+        fx, fy, fw, fh = faces[idx][:4]
+        bbox = [float(fx), float(fy), float(fx + fw), float(fy + fh)]
         return {"label": "Face Detected", "confidence": round(face_certainty, 4), "bbox": bbox}
 
 

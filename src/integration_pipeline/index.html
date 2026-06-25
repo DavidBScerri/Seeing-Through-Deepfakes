@@ -1368,7 +1368,7 @@
                           </thead>
                           <tbody>
                             <tr>
-                              <td>MTCNN Face Detection</td>
+                              <td>YuNet Face Detection</td>
                               <td id="df-val-face">No Face Detected</td>
                               <td class="val" id="df-conf-face">-</td>
                             <tr>
@@ -1616,7 +1616,7 @@
         } else if (statusStep === 3) {
           updateProcessingStatus("Running Visual Classifier...", "Processing image pixels via fine-tuned ViT");
         } else if (statusStep === 5) {
-          updateProcessingStatus("Running Face Detection...", "Scanning face bounding boxes with MTCNN");
+          updateProcessingStatus("Running Face Detection...", "Scanning face bounding boxes with YuNet");
         } else if (statusStep === 7) {
           updateProcessingStatus("Decision Fusion Engine...", "Applying selected decision formula");
         } else if (statusStep === 9) {

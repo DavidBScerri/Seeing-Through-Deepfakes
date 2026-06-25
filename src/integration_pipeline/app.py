@@ -24,7 +24,7 @@ from src.integration_pipeline.fusion import (
     extract_visual_ai_probability,
     crop_face_region,
 )
-from src.visual_module.gradcam import generate_gradcam_overlay
+from src.deepfake_module.gradcam_face_analysis import compute_occlusion_saliency, _overlay_heatmap
 
 _active_server = None
 _server_thread = None
@@ -144,17 +144,30 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
     visual_result = visual_classifier.predict(pil_image)
     visual_ai_prob = extract_visual_ai_probability(visual_result)
 
-    # GradCAM heatmap for whole image
+    # Global YuNet Saliency Map for whole image
     try:
-        visual_gradcam_b64 = generate_gradcam_overlay(
-            model=visual_classifier.model,
-            processor=visual_classifier.processor,
-            image=pil_image,
-            device=visual_classifier.device,
+        import numpy as np
+        # Use large patch/stride for whole image speed
+        patch_size = max(16, int(min(pil_image.size) / 16))
+        stride = max(8, int(patch_size / 2))
+        saliency_map = compute_occlusion_saliency(
+            deepfake_classifier.face_detector, 
+            pil_image, 
+            patch_size=patch_size, 
+            stride=stride
         )
+        
+        # Overlay and convert to base64
+        img_np = np.array(pil_image)
+        overlay_rgb = _overlay_heatmap(img_np, saliency_map, alpha=0.5, cmap="hot")
+        overlay_uint8 = (overlay_rgb * 255).astype(np.uint8)
+        
+        buffered = io.BytesIO()
+        Image.fromarray(overlay_uint8).save(buffered, format="JPEG", quality=85)
+        visual_gradcam_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
     except Exception as e:
         traceback.print_exc()
-        print(f"[GradCAM] Whole-image heatmap failed: {e}")
+        print(f"[YuNet Saliency] Whole-image heatmap failed: {e}")
         visual_gradcam_b64 = None
 
     # Face crop detection & classification
@@ -178,15 +191,29 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
         cropped_visual_ai_prob = extract_visual_ai_probability(cropped_visual_result)
 
         try:
-            cropped_gradcam_b64 = generate_gradcam_overlay(
-                model=visual_classifier.model,
-                processor=visual_classifier.processor,
-                image=cropped_face,
-                device=visual_classifier.device,
+            # For cropped face, use a smaller patch size
+            patch_size = max(4, int(min(cropped_face.size) / 8))
+            stride = max(2, int(patch_size / 2))
+            crop_saliency = compute_occlusion_saliency(
+                deepfake_classifier.face_detector,
+                cropped_face,
+                patch_size=patch_size,
+                stride=stride
             )
+            # Normalize crop saliency
+            if crop_saliency.max() > 0:
+                crop_saliency = crop_saliency / crop_saliency.max()
+                
+            crop_img_np = np.array(cropped_face)
+            crop_overlay_rgb = _overlay_heatmap(crop_img_np, crop_saliency, alpha=0.5, cmap="jet")
+            crop_overlay_uint8 = (crop_overlay_rgb * 255).astype(np.uint8)
+            
+            buffered2 = io.BytesIO()
+            Image.fromarray(crop_overlay_uint8).save(buffered2, format="JPEG", quality=85)
+            cropped_gradcam_b64 = base64.b64encode(buffered2.getvalue()).decode("utf-8")
         except Exception as e:
             traceback.print_exc()
-            print(f"[GradCAM] Cropped-face heatmap failed: {e}")
+            print(f"[YuNet Saliency] Cropped-face heatmap failed: {e}")
             cropped_gradcam_b64 = None
 
     # Decision fusion

@@ -1,20 +1,18 @@
 """
-GradCAM & Saliency Analysis for MTCNN Face Detection
-=====================================================
+Occlusion-based Saliency Analysis for YuNet Face Detection
+==========================================================
 
-Investigates why MTCNN sometimes assigns high face confidence to images
-without faces, using three complementary visualization approaches:
+Investigates why YuNet sometimes assigns high face confidence to images
+without faces, using model-agnostic visualization approaches:
 
-1. **P-Net Face Probability Heatmap**: Direct spatial output from MTCNN's
-   first-stage detector showing which regions look "face-like" at multiple
-   scales.
+1. **Occlusion Sensitivity Map**: A sliding-window approach that occludes
+   patches of the image and measures how the maximum face detection
+   confidence drops. This produces a spatial heatmap showing which pixels
+   are most responsible for triggering a face detection.
 
-2. **Input Saliency Map**: Pixel-level gradient magnitude showing which
-   parts of the input most influence the face detection score.
-
-3. **O-Net GradCAM**: Gradient-weighted Class Activation Maps on MTCNN's
-   final-stage network, showing what features in the detected region
-   contribute to face confidence.
+2. **Detection Region Saliency**: For each detected face proposal, performs
+   fine-grained occlusion within the bounding box to highlight the specific
+   features driving the confidence score.
 
 Usage:
     Standalone:   python gradcam_face_analysis.py
@@ -26,14 +24,12 @@ from __future__ import annotations
 
 import os
 import glob
+import math
 import numpy as np
-import torch
-import torch.nn.functional as F
+import cv2
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 from matplotlib.patches import Rectangle
 from PIL import Image
-from facenet_pytorch import MTCNN
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 
@@ -41,25 +37,6 @@ IMAGE_EXTENSIONS = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp")
 
 
 # ─── Helper Functions ──────────────────────────────────────────────────────────
-
-def _pil_to_nchw(image: Image.Image) -> torch.Tensor:
-    """Convert PIL image to NCHW float tensor (0-255 range)."""
-    img_np = np.array(image).astype(np.float32)      # H, W, C
-    return torch.tensor(img_np).unsqueeze(0).permute(0, 3, 1, 2)  # 1, C, H, W
-
-
-def _normalize_mtcnn(tensor: torch.Tensor) -> torch.Tensor:
-    """Apply MTCNN's standard normalization: (x - 127.5) / 128."""
-    return (tensor - 127.5) * 0.0078125
-
-
-def _resize_2d(arr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
-    """Resize a 2-D float array using bilinear interpolation (via torch)."""
-    t = torch.tensor(arr).unsqueeze(0).unsqueeze(0)   # 1, 1, H, W
-    t = F.interpolate(t, size=(target_h, target_w),
-                      mode="bilinear", align_corners=False)
-    return t.squeeze().numpy()
-
 
 def _overlay_heatmap(
     image_np: np.ndarray,
@@ -84,217 +61,195 @@ def _overlay_heatmap(
 
 # ─── Analysis Functions ────────────────────────────────────────────────────────
 
-def compute_pnet_heatmap(mtcnn: MTCNN, image: Image.Image) -> np.ndarray:
+def _get_max_face_score(face_detector: cv2.FaceDetectorYN, img_bgr: np.ndarray) -> float:
+    """Runs YuNet and returns the maximum face confidence score, or 0.0001 if none."""
+    h, w = img_bgr.shape[:2]
+    face_detector.setInputSize((w, h))
+    _, faces = face_detector.detect(img_bgr)
+    
+    if faces is None or len(faces) == 0:
+        return 0.0001
+        
+    scores = faces[:, 14]
+    return float(np.clip(np.max(scores), 0.0001, 0.9999))
+
+
+def compute_occlusion_saliency(
+    face_detector: cv2.FaceDetectorYN, 
+    image: Image.Image,
+    patch_size: int = 32,
+    stride: int = 16
+) -> np.ndarray:
     """
-    Multi-scale face probability heatmap from P-Net.
-
-    P-Net scans the image at every scale in MTCNN's image pyramid and
-    outputs a spatial map of face probabilities.  We resize each map
-    back to the original image size and average across scales.
-
+    Input-space saliency map via Occlusion Sensitivity.
+    
+    Systematically occludes patches of the image (with mean color) and measures
+    the drop in maximum face confidence.
+    
     Returns:
-        (H, W) numpy array of face probabilities.
+        (H, W) numpy array of sensitivity values (larger means more important).
     """
-    w, h = image.size
-    img_nchw = _pil_to_nchw(image)                    # 1, 3, H, W  (0-255)
-
-    # Replicate MTCNN's image pyramid
-    min_face = mtcnn.min_face_size
-    factor = mtcnn.factor
-    min_len = min(h, w)
-    m = 12.0 / min_face
-    min_len_scaled = min_len * m
-
-    scales: list[float] = []
-    while min_len_scaled >= 12:
-        scales.append(m)
-        min_len_scaled *= factor
-        m *= factor
-
-    combined = np.zeros((h, w), dtype=np.float32)
-    count = np.zeros((h, w), dtype=np.float32)
-
-    pnet = mtcnn.pnet
-    pnet.eval()
-
-    for scale in scales:
-        hs = int(np.ceil(h * scale))
-        ws = int(np.ceil(w * scale))
-        if hs < 12 or ws < 12:
-            continue
-
-        im_data = F.interpolate(img_nchw, size=(hs, ws),
-                                mode="bilinear", align_corners=False)
-        im_data = _normalize_mtcnn(im_data)
-
-        with torch.no_grad():
-            _, probs = pnet(im_data.to("cpu"))
-
-        # probs: (1, 2, H', W') — channel 1 = P(face)
-        face_prob = probs[0, 1].cpu().numpy()
-        face_prob_resized = _resize_2d(face_prob, w, h)
-
-        combined += face_prob_resized
-        count += 1.0
-
-    count[count == 0] = 1.0
-    return combined / count
+    img_rgb = np.array(image.convert("RGB"))
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    h, w = img_bgr.shape[:2]
+    
+    baseline_score = _get_max_face_score(face_detector, img_bgr)
+    
+    # If no face is detected initially, the whole map is essentially 0
+    if baseline_score < 0.01:
+        return np.zeros((h, w), dtype=np.float32)
+        
+    mean_color = np.mean(img_bgr, axis=(0, 1)).astype(np.uint8)
+    
+    saliency = np.zeros((h, w), dtype=np.float32)
+    counts = np.zeros((h, w), dtype=np.float32)
+    
+    # Calculate grid
+    y_steps = max(1, math.ceil((h - patch_size) / stride) + 1)
+    x_steps = max(1, math.ceil((w - patch_size) / stride) + 1)
+    
+    for y_idx in range(y_steps):
+        for x_idx in range(x_steps):
+            y_start = min(y_idx * stride, h - patch_size if h > patch_size else 0)
+            x_start = min(x_idx * stride, w - patch_size if w > patch_size else 0)
+            y_end = min(y_start + patch_size, h)
+            x_end = min(x_start + patch_size, w)
+            
+            # Create occluded image
+            img_occ = img_bgr.copy()
+            img_occ[y_start:y_end, x_start:x_end] = mean_color
+            
+            # Score
+            occ_score = _get_max_face_score(face_detector, img_occ)
+            
+            # Drop in confidence (importance of this patch)
+            drop = max(0.0, baseline_score - occ_score)
+            
+            saliency[y_start:y_end, x_start:x_end] += drop
+            counts[y_start:y_end, x_start:x_end] += 1.0
+            
+    counts[counts == 0] = 1.0
+    saliency_map = saliency / counts
+    return saliency_map
 
 
-def compute_input_saliency(mtcnn: MTCNN, image: Image.Image) -> np.ndarray:
-    """
-    Input-space saliency map via P-Net back-propagation.
-
-    Computes the gradient of the maximum face probability with respect
-    to the input pixels.  The gradient magnitude (max across colour
-    channels) highlights which pixels most influence the face score.
-
-    Returns:
-        (H, W) numpy array of gradient magnitudes.
-    """
-    w, h = image.size
-    img_nchw = _pil_to_nchw(image)                    # 1, 3, H, W
-
-    # Use the first (largest) scale from MTCNN's pyramid
-    m = 12.0 / mtcnn.min_face_size
-    hs, ws = int(np.ceil(h * m)), int(np.ceil(w * m))
-
-    im_data = F.interpolate(img_nchw, size=(hs, ws),
-                            mode="bilinear", align_corners=False)
-    im_data = _normalize_mtcnn(im_data)
-    im_data = im_data.detach().requires_grad_(True)
-
-    pnet = mtcnn.pnet
-    pnet.eval()
-
-    # Forward (with gradient tracking)
-    _, probs = pnet(im_data)
-    face_score = probs[:, 1].max()
-    face_score.backward()
-
-    grad = im_data.grad.data.abs()                     # 1, 3, H', W'
-    saliency = grad.squeeze(0).max(dim=0)[0].cpu().numpy()
-    return _resize_2d(saliency, w, h)
-
-
-def compute_onet_gradcam(
-    mtcnn: MTCNN,
+def compute_detection_region_analysis(
+    face_detector: cv2.FaceDetectorYN,
     image: Image.Image,
     detection_boxes: np.ndarray | None = None,
     detection_probs: np.ndarray | None = None,
 ) -> list[dict]:
     """
-    GradCAM on MTCNN's O-Net for detected face proposals.
-
-    For each face proposal, crops and resizes to 48×48, runs through
-    O-Net, and computes a gradient-weighted class activation map on
-    the last convolutional activation (`prelu4`, spatial size 3×3).
-
-    If no proposals are available at the normal thresholds, a
-    secondary MTCNN with lowered thresholds is used so we can still
-    visualise what almost-passed regions look like.
-
+    Fine-grained occlusion sensitivity within detected face regions.
+    
+    For each face proposal, performs a denser occlusion scan just within
+    that bounding box to see which specific features drive the confidence.
+    
     Returns:
         List of dicts, each with:
-            box             (x1, y1, x2, y2) in original image coords
-            confidence      O-Net face probability for this crop
-            gradcam_crop    (3, 3) raw GradCAM array
-            gradcam_full    (H, W) GradCAM mapped to original image
-            crop_image      (48, 48, 3) uint8 array of the resized crop
+            box             (x1, y1, x2, y2)
+            confidence      Detection confidence
+            saliency_crop   Raw sensitivity array for the crop
+            saliency_full   (H, W) map mapped to original image
+            crop_image      uint8 array of the region
     """
-    w, h = image.size
+    img_rgb = np.array(image.convert("RGB"))
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    h, w = img_bgr.shape[:2]
 
-    # Get proposals — fall back to lower thresholds if nothing found
+    # Get proposals if not provided
     if detection_boxes is None or len(detection_boxes) == 0:
-        try:
-            low_mtcnn = MTCNN(
-                keep_all=True, device="cpu",
-                thresholds=[0.3, 0.4, 0.4],
-                min_face_size=15,
-            )
-            detection_boxes, detection_probs = low_mtcnn.detect(image)
-        except Exception:
-            pass
+        face_detector.setInputSize((w, h))
+        # Lower threshold temporarily to find proposals
+        old_thresh = face_detector.getScoreThreshold()
+        face_detector.setScoreThreshold(0.3)
+        _, faces = face_detector.detect(img_bgr)
+        face_detector.setScoreThreshold(old_thresh)
+        
+        if faces is not None and len(faces) > 0:
+            detection_boxes = []
+            detection_probs = []
+            for face in faces:
+                fx, fy, fw, fh = face[:4]
+                detection_boxes.append([fx, fy, fx + fw, fy + fh])
+                detection_probs.append(face[14])
+            detection_boxes = np.array(detection_boxes)
+            detection_probs = np.array(detection_probs)
 
     if detection_boxes is None or len(detection_boxes) == 0:
         return []
 
-    onet = mtcnn.onet
-    onet.eval()
     results: list[dict] = []
-
+    
+    # Analyze each detected box
     for i in range(len(detection_boxes)):
         box = detection_boxes[i]
         x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
 
-        # Clamp to image bounds
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        if x2 - x1 < 3 or y2 - y1 < 3:
+        # Clamp to bounds and add some padding to the analysis region
+        pad_x = int((x2 - x1) * 0.2)
+        pad_y = int((y2 - y1) * 0.2)
+        
+        ax1, ay1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
+        ax2, ay2 = min(w, x2 + pad_x), min(h, y2 + pad_y)
+        
+        if ax2 - ax1 < 10 or ay2 - ay1 < 10:
             continue
+            
+        crop_rgb = img_rgb[ay1:ay2, ax1:ax2].copy()
+        
+        # Fine-grained occlusion on this region
+        patch_size = max(4, int(min(ax2 - ax1, ay2 - ay1) / 8))
+        stride = max(2, int(patch_size / 2))
+        
+        crop_pil = Image.fromarray(crop_rgb)
+        
+        # We need to evaluate the whole image but with occlusion only in the crop
+        baseline_score = float(detection_probs[i])
+        
+        mean_color = np.mean(img_bgr[ay1:ay2, ax1:ax2], axis=(0, 1)).astype(np.uint8)
+        
+        saliency_crop = np.zeros((ay2 - ay1, ax2 - ax1), dtype=np.float32)
+        counts = np.zeros((ay2 - ay1, ax2 - ax1), dtype=np.float32)
+        
+        y_steps = max(1, math.ceil(((ay2 - ay1) - patch_size) / stride) + 1)
+        x_steps = max(1, math.ceil(((ax2 - ax1) - patch_size) / stride) + 1)
+        
+        for y_idx in range(y_steps):
+            for x_idx in range(x_steps):
+                y_start = min(y_idx * stride, (ay2 - ay1) - patch_size if (ay2 - ay1) > patch_size else 0)
+                x_start = min(x_idx * stride, (ax2 - ax1) - patch_size if (ax2 - ax1) > patch_size else 0)
+                y_end = min(y_start + patch_size, ay2 - ay1)
+                x_end = min(x_start + patch_size, ax2 - ax1)
+                
+                # Occlude just this patch in the full image
+                img_occ = img_bgr.copy()
+                img_occ[ay1+y_start : ay1+y_end, ax1+x_start : ax1+x_end] = mean_color
+                
+                occ_score = _get_max_face_score(face_detector, img_occ)
+                drop = max(0.0, baseline_score - occ_score)
+                
+                saliency_crop[y_start:y_end, x_start:x_end] += drop
+                counts[y_start:y_end, x_start:x_end] += 1.0
+                
+        counts[counts == 0] = 1.0
+        saliency_crop = saliency_crop / counts
+        
+        # Map back to full
+        cam_full = np.zeros((h, w), dtype=np.float32)
+        cam_full[ay1:ay2, ax1:ax2] = saliency_crop
+        
+        # Normalize the crop saliency for visualization
+        if saliency_crop.max() > 0:
+            saliency_crop = saliency_crop / saliency_crop.max()
 
-        # Crop → 48×48
-        crop = image.crop((x1, y1, x2, y2))
-        crop_48 = crop.resize((48, 48), Image.BILINEAR)
-        crop_np = np.array(crop_48)
-
-        crop_tensor = _pil_to_nchw(crop_48)            # 1, 3, 48, 48
-        crop_tensor = _normalize_mtcnn(crop_tensor)
-        crop_tensor = crop_tensor.detach().requires_grad_(True)
-
-        # ── Hook storage ──
-        act_store: dict = {}
-        grad_store: dict = {}
-
-        def _fwd(module, inp, out, _store=act_store):
-            _store["feat"] = out
-
-        def _bwd(module, grad_in, grad_out, _store=grad_store):
-            _store["feat"] = grad_out[0]
-
-        # Target: prelu4 — last conv activation in O-Net
-        handle_fwd = onet.prelu4.register_forward_hook(_fwd)
-        handle_bwd = onet.prelu4.register_full_backward_hook(_bwd)
-
-        try:
-            # ONet.forward returns (bbox_reg, landmarks, face_prob)
-            _, _, face_prob = onet(crop_tensor)
-            face_score = face_prob[0, 1]               # P(face)
-
-            onet.zero_grad()
-            if crop_tensor.grad is not None:
-                crop_tensor.grad.zero_()
-            face_score.backward()
-
-            # GradCAM weights: global-average-pool of gradients per channel
-            g = grad_store["feat"]                     # 1, 128, 3, 3
-            a = act_store["feat"]                      # 1, 128, 3, 3
-            weights = g.mean(dim=(2, 3), keepdim=True) # 1, 128, 1, 1
-            cam = (weights * a).sum(dim=1, keepdim=True)
-            cam = F.relu(cam)                          # only positive
-            cam_np = cam.squeeze().detach().cpu().numpy()   # 3×3
-
-            if cam_np.max() > 0:
-                cam_np = cam_np / cam_np.max()
-
-            # Map GradCAM back onto the full image
-            cam_full = np.zeros((h, w), dtype=np.float32)
-            cam_box = _resize_2d(cam_np, x2 - x1, y2 - y1)
-            cam_full[y1:y2, x1:x2] = np.maximum(
-                cam_full[y1:y2, x1:x2], cam_box
-            )
-
-            results.append({
-                "box": (x1, y1, x2, y2),
-                "confidence": float(face_score.item()),
-                "gradcam_crop": cam_np,
-                "gradcam_full": cam_full,
-                "crop_image": crop_np,
-            })
-
-        finally:
-            handle_fwd.remove()
-            handle_bwd.remove()
+        results.append({
+            "box": (x1, y1, x2, y2),
+            "confidence": baseline_score,
+            "saliency_crop": saliency_crop,
+            "saliency_full": cam_full,
+            "crop_image": crop_rgb,
+        })
 
     return results
 
@@ -302,54 +257,58 @@ def compute_onet_gradcam(
 # ─── Visualisation ─────────────────────────────────────────────────────────────
 
 def analyse_and_visualise(
-    mtcnn: MTCNN,
+    face_detector: cv2.FaceDetectorYN,
     image_path: str,
     output_dir: str,
 ) -> dict:
     """
-    Run the full three-method analysis on a single image and save a
-    2×2 visualisation figure.
-
-    Panels:
-        Top-left:     Original image with detection bounding boxes.
-        Top-right:    P-Net face probability heatmap overlay.
-        Bottom-left:  Input saliency map overlay.
-        Bottom-right: O-Net GradCAM overlay (mapped back to full image).
+    Run occlusion sensitivity analysis on a single image and save a
+    visualisation figure.
     """
     fname = os.path.basename(image_path)
     image = Image.open(image_path).convert("RGB")
     image_np = np.array(image)
-    w, h = image.size
+    img_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    h, w = img_bgr.shape[:2]
 
     # ── Standard face detection ──
-    boxes, probs = mtcnn.detect(image)
-    has_det = boxes is not None and len(boxes) > 0
+    face_detector.setInputSize((w, h))
+    _, faces = face_detector.detect(img_bgr)
+    
+    has_det = faces is not None and len(faces) > 0
 
+    boxes = []
+    probs = []
+    face_conf = 0.0001
+    
     if has_det:
-        best = int(np.argmax(probs))
-        face_conf = float(np.clip(probs[best], 0.0001, 0.9999))
-    else:
-        face_conf = 0.0001
+        for face in faces:
+            fx, fy, fw, fh = face[:4]
+            boxes.append([fx, fy, fx + fw, fy + fh])
+            probs.append(float(np.clip(face[14], 0.0001, 0.9999)))
+        boxes = np.array(boxes)
+        probs = np.array(probs)
+        face_conf = float(np.max(probs))
 
     # ── Analyses ──
-    print("  ├─ P-Net heatmap …")
-    pnet_heatmap = compute_pnet_heatmap(mtcnn, image)
+    print("  ├─ Global Occlusion Saliency …")
+    # Use larger patches for global saliency to speed it up
+    patch_size = max(16, int(min(w, h) / 16))
+    stride = max(8, int(patch_size / 2))
+    saliency_map = compute_occlusion_saliency(face_detector, image, patch_size=patch_size, stride=stride)
 
-    print("  ├─ Input saliency …")
-    saliency_map = compute_input_saliency(mtcnn, image)
-
-    print("  └─ O-Net GradCAM …")
-    gc_results = compute_onet_gradcam(mtcnn, image, boxes, probs)
+    print("  └─ Face Region Saliency …")
+    gc_results = compute_detection_region_analysis(face_detector, image, boxes, probs)
 
     # ── Build figure ──
-    fig, axes = plt.subplots(2, 2, figsize=(16, 14))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     fig.suptitle(
-        f"{fname}\nFace Confidence: {face_conf:.4f}",
-        fontsize=14, fontweight="bold", y=0.98,
+        f"{fname}\nYuNet Face Confidence: {face_conf:.4f}",
+        fontsize=14, fontweight="bold", y=1.05,
     )
 
     # Panel 1 — Original + bounding boxes
-    ax = axes[0, 0]
+    ax = axes[0]
     ax.imshow(image_np)
     if has_det:
         for bx, pr in zip(boxes, probs):
@@ -365,37 +324,28 @@ def analyse_and_visualise(
     ax.set_title("Original + Face Detection", fontsize=12)
     ax.axis("off")
 
-    # Panel 2 — P-Net heatmap
-    ax = axes[0, 1]
-    ax.imshow(_overlay_heatmap(image_np, pnet_heatmap, alpha=0.5))
-    ax.set_title(
-        "P-Net Face Probability Heatmap\n"
-        "(Where MTCNN sees face-like patterns)",
-        fontsize=11,
-    )
-    ax.axis("off")
-
-    # Panel 3 — Input saliency
-    ax = axes[1, 0]
+    # Panel 2 — Global Saliency
+    ax = axes[1]
     ax.imshow(_overlay_heatmap(image_np, saliency_map, alpha=0.5, cmap="hot"))
     ax.set_title(
-        "Input Saliency Map\n"
+        "Global Occlusion Saliency\n"
         "(Which pixels influence face score most)",
         fontsize=11,
     )
     ax.axis("off")
 
-    # Panel 4 — O-Net GradCAM
-    ax = axes[1, 1]
+    # Panel 3 — Region Saliency
+    ax = axes[2]
     if gc_results:
         combined_gcam = np.zeros((h, w), dtype=np.float32)
         for gc in gc_results:
-            combined_gcam = np.maximum(combined_gcam, gc["gradcam_full"])
-        ax.imshow(_overlay_heatmap(image_np, combined_gcam, alpha=0.5))
+            combined_gcam = np.maximum(combined_gcam, gc["saliency_full"])
+            
+        ax.imshow(_overlay_heatmap(image_np, combined_gcam, alpha=0.5, cmap="jet"))
         n_props = len(gc_results)
         max_c = max(gc["confidence"] for gc in gc_results)
         ax.set_title(
-            f"O-Net GradCAM ({n_props} proposal(s), max conf: {max_c:.3f})\n"
+            f"Face Region Features ({n_props} proposal(s), max conf: {max_c:.3f})\n"
             "(What features drive face confidence)",
             fontsize=11,
         )
@@ -416,14 +366,14 @@ def analyse_and_visualise(
             fontsize=14, color="white",
             bbox=dict(facecolor="red", alpha=0.7, pad=8),
         )
-        ax.set_title("O-Net GradCAM\n(No proposals available)", fontsize=11)
+        ax.set_title("Face Region Features\n(No proposals available)", fontsize=11)
     ax.axis("off")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.tight_layout()
 
     os.makedirs(output_dir, exist_ok=True)
     stem = os.path.splitext(fname)[0]
-    out_path = os.path.join(output_dir, f"gradcam_{stem}.png")
+    out_path = os.path.join(output_dir, f"saliency_{stem}.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -433,9 +383,14 @@ def analyse_and_visualise(
         "filename": fname,
         "face_confidence": face_conf,
         "has_detection": has_det,
-        "pnet_max": float(pnet_heatmap.max()),
+        "saliency_max": float(saliency_map.max()) if saliency_map.size > 0 else 0.0,
         "num_proposals": len(gc_results),
     }
+
+
+def _get_yunet_model_path() -> str:
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(module_dir, "models", "face_detection_yunet_2023mar.onnx")
 
 
 # ─── Entry Points ──────────────────────────────────────────────────────────────
@@ -445,12 +400,8 @@ def run_analysis(
     output_dir: str | None = None,
 ) -> list[dict]:
     """
-    Run the GradCAM analysis on all images in *sample_dir* and save
+    Run the analysis on all images in *sample_dir* and save
     visualisation figures to *output_dir*.
-
-    Can be called from a notebook cell:
-        from gradcam_face_analysis import run_analysis
-        results = run_analysis()
     """
     try:
         base = os.path.dirname(os.path.abspath(__file__))
@@ -460,17 +411,30 @@ def run_analysis(
     if sample_dir is None:
         sample_dir = os.path.join(base, "..", "..", "data", "sample_images")
     if output_dir is None:
-        output_dir = os.path.join(base, "outputs", "gradcam_analysis")
+        output_dir = os.path.join(base, "outputs", "saliency_analysis")
 
     sample_dir = os.path.abspath(sample_dir)
     output_dir = os.path.abspath(output_dir)
 
     print("=" * 70)
-    print("  GradCAM & Saliency Analysis for MTCNN Face Detection")
+    print("  Occlusion Saliency Analysis for YuNet Face Detection")
     print("=" * 70)
 
-    print("\n🔧  Loading MTCNN …")
-    mtcnn = MTCNN(keep_all=True, device="cpu")
+    print("\n🔧  Loading YuNet …")
+    yunet_path = _get_yunet_model_path()
+    if not os.path.exists(yunet_path):
+        print(f"Error: YuNet model not found at {yunet_path}")
+        print("Please run deepfake_classifier.py first to download it.")
+        return []
+        
+    face_detector = cv2.FaceDetectorYN.create(
+        model=yunet_path,
+        config="",
+        input_size=(320, 320),
+        score_threshold=0.5,
+        nms_threshold=0.3,
+        top_k=5000,
+    )
 
     image_paths: list[str] = []
     for ext in IMAGE_EXTENSIONS:
@@ -484,7 +448,7 @@ def run_analysis(
     for img_path in image_paths:
         fname = os.path.basename(img_path)
         print(f"📷  {fname}")
-        res = analyse_and_visualise(mtcnn, img_path, output_dir)
+        res = analyse_and_visualise(face_detector, img_path, output_dir)
         results.append(res)
 
     # ── Summary table ──
