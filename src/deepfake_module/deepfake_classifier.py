@@ -1,8 +1,6 @@
 import os
 import torch
-from transformers import AutoImageProcessor, AutoModelForImageClassification, TrainingArguments, Trainer
-from datasets import load_dataset
-import birder
+from transformers import AutoImageProcessor
 import numpy as np
 import faiss
 import json
@@ -12,16 +10,14 @@ from facenet_pytorch import MTCNN
 
 class DeepfakeClassifier:
     def __init__(self,
-                 scene_model_name="birder-project/rope_vit_reg4_b14_capi-places365",
                  landmark_model_name="facebook/dinov2-base",
                  index_path="models/landmarks_index.faiss",
                  metadata_path="models/landmarks_metadata.json"):
         """
-        Initializes the Deepfake Classifier with sub-models for face detection,
-        scene classification, and landmark retrieval.
+        Initializes the Deepfake Classifier with sub-models for face detection
+        and landmark retrieval.
 
         Args:
-            scene_model_name:     Birder model name for scene/Places365 classification.
             landmark_model_name:  HuggingFace model ID for landmark embeddings (DINOv2).
             index_path:           Path to the FAISS index file.
             metadata_path:        Path to the landmark metadata JSON file.
@@ -34,20 +30,6 @@ class DeepfakeClassifier:
 
         print("Loading Face Detection model: MTCNN")
         self.mtcnn = MTCNN(keep_all=True, device='cpu')
-
-        print(f"Loading Scene model: {scene_model_name}")
-        try:
-            (self.scene_model, self.scene_info) = birder.load_pretrained_model(scene_model_name, inference=True)
-            self.scene_model.to(self.device)
-            self.scene_model.eval()
-            size = birder.get_size_from_signature(self.scene_info.signature)
-            self.scene_transform = birder.classification_transform(size, self.scene_info.rgb_stats)
-        except Exception as e:
-            print(f"Warning: Could not load {scene_model_name} via birder: {e}. Falling back to google/vit-base-patch16-224.")
-            self.scene_processor = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224")
-            self.scene_model = AutoModelForImageClassification.from_pretrained("google/vit-base-patch16-224").to(self.device)
-            self.scene_model.eval()
-            self.scene_info = None
 
         print(f"Loading Landmark Retrieval model: {landmark_model_name}")
         self.landmark_index = LandmarkIndex(
@@ -80,34 +62,6 @@ class DeepfakeClassifier:
         bbox = [float(x) for x in boxes[idx]]
         return {"label": "Face Detected", "confidence": round(face_certainty, 4), "bbox": bbox}
 
-    def predict_scene(self, image):
-        """
-        Classifies the generic scene in the image (Places365).
-
-        Args:
-            image: A PIL Image object.
-
-        Returns:
-            dict with keys ``label`` and ``confidence``.
-        """
-        if self.scene_info:
-            with torch.no_grad():
-                input_tensor = self.scene_transform(image).unsqueeze(0).to(self.device)
-                outputs = self.scene_model(input_tensor)
-                probs = torch.nn.functional.softmax(outputs, dim=-1)
-
-            max_prob, idx = torch.max(probs, dim=-1)
-            label = self.scene_info.labels[idx.item()]
-        else:
-            inputs = self.scene_processor(images=image, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                outputs = self.scene_model(**inputs)
-                probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-
-            max_prob, idx = torch.max(probs, dim=-1)
-            label = self.scene_model.config.id2label[idx.item()]
-
-        return {"label": label, "confidence": round(max_prob.item(), 4)}
 
     def predict_landmark(self, image, top_k=10, similarity_threshold=0.5):
         """
@@ -152,7 +106,6 @@ class DeepfakeClassifier:
 
         if ai_score >= threshold:
             face_res = self.predict_face(image)
-            scene_res = self.predict_scene(image)
             landmark_res = self.predict_landmark(image)
 
             has_face = face_res["confidence"] >= 0.90
@@ -162,7 +115,6 @@ class DeepfakeClassifier:
                 "has_face": has_face,
                 "has_place": has_landmark,
                 "face_analysis": face_res,
-                "scene_analysis": scene_res,
                 "landmark_analysis": landmark_res
             }
 

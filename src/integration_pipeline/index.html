@@ -1371,12 +1371,6 @@
                               <td>MTCNN Face Detection</td>
                               <td id="df-val-face">No Face Detected</td>
                               <td class="val" id="df-conf-face">-</td>
-                            </tr>
-                            <tr>
-                              <td>Places365 Scene Classifier</td>
-                              <td id="df-val-scene">-</td>
-                              <td class="val" id="df-conf-scene">-</td>
-                            </tr>
                             <tr>
                               <td>DINOv2 Landmark Search</td>
                               <td id="df-val-landmark">None matched</td>
@@ -1626,7 +1620,7 @@
         } else if (statusStep === 7) {
           updateProcessingStatus("Decision Fusion Engine...", "Applying selected decision formula");
         } else if (statusStep === 9) {
-          updateProcessingStatus("Executing Deepfake Module...", "Running Scene classifier and DINOv2 retrieval");
+          updateProcessingStatus("Executing Deepfake Module...", "Running DINOv2 landmark retrieval");
         }
       }, 700);
 
@@ -1830,11 +1824,6 @@
         const face = df.face_analysis;
         document.getElementById('df-val-face').textContent = face.label;
         document.getElementById('df-conf-face').textContent = face.bbox ? (face.confidence * 100).toFixed(2) + '%' : '-';
-
-        // Scene
-        const scene = df.scene_analysis;
-        document.getElementById('df-val-scene').textContent = scene.label;
-        document.getElementById('df-conf-scene').textContent = (scene.confidence * 100).toFixed(2) + '%';
 
         // Landmark
         const landmark = df.landmark_analysis;

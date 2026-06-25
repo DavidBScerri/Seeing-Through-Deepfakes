@@ -253,7 +253,6 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             "has_face": has_face,
             "has_place": has_place,
             "face_analysis": da.get("face_analysis") if da else None,
-            "scene_analysis": da.get("scene_analysis") if da else None,
             "landmark_analysis": da.get("landmark_analysis") if da else None,
         }
     else:
