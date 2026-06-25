@@ -1,10 +1,10 @@
 filename,expected,base_prediction,base_confidence,base_ai_prob,base_correct,ft_prediction,ft_confidence,ft_ai_prob,ft_correct,cropped_ai_prob,meta_ai_prob,meta_decision,fused_ai_prob,fused_label,fused_correct,has_face,has_place,verdict,verdict_correct
-fake+metadata+place-face.png,AI Generated,Real,0.9906,0.0094,False,Real,0.9949,0.0051,False,,0.99,likely_ai_generated,0.2666,Real,False,False,False,Real,False
-fake+metadata-place+face.png,AI Generated,Real,0.992,0.008,False,Real,0.995,0.005,False,0.005,0.99,likely_ai_generated,0.2665,Real,False,False,False,Real,False
-fake+metadata-place-face.png,AI Generated,Real,0.9814,0.0186,False,Real,0.9942,0.0058,False,,0.99,likely_ai_generated,0.2671,Real,False,False,False,Real,False
-fake-metadata+place-face.png,AI Generated,Real,0.9906,0.0094,False,Real,0.9949,0.0051,False,,0.53,uncertain,0.1445,Real,False,False,False,Real,False
-fake-metadata-place+face.png,AI Generated,Real,0.992,0.008,False,Real,0.995,0.005,False,0.005,0.5,uncertain,0.1364,Real,False,False,False,Real,False
-fake-metadata-place-face.png,AI Generated,Real,0.9814,0.0186,False,Real,0.9942,0.0058,False,,0.5,uncertain,0.137,Real,False,False,False,Real,False
+ai+metadata-place-face.png,AI Generated,Real,0.9814,0.0186,False,Real,0.9942,0.0058,False,,0.99,likely_ai_generated,0.2671,Real,False,False,False,Real,False
+ai-metadata-place-face.png,AI Generated,Real,0.9814,0.0186,False,Real,0.9942,0.0058,False,,0.5,uncertain,0.137,Real,False,False,False,Real,False
+deepfake+metadata+place-face.png,AI Generated,Real,0.9906,0.0094,False,Real,0.9949,0.0051,False,,0.99,likely_ai_generated,0.2666,Real,False,False,False,Real,False
+deepfake+metadata-place+face.png,AI Generated,Real,0.992,0.008,False,Real,0.995,0.005,False,0.005,0.99,likely_ai_generated,0.2665,Real,False,False,False,Real,False
+deepfake-metadata+place-face.png,AI Generated,Real,0.9906,0.0094,False,Real,0.9949,0.0051,False,,0.53,uncertain,0.1445,Real,False,False,False,Real,False
+deepfake-metadata-place+face.png,AI Generated,Real,0.992,0.008,False,Real,0.995,0.005,False,0.005,0.5,uncertain,0.1364,Real,False,False,False,Real,False
 real+metadata+place-face.jpg,Real,Real,0.9864,0.0136,True,Real,0.9946,0.0054,True,0.0074,0.35,likely_camera_origin,0.0984,Real,True,False,False,Real,True
 real+metadata-place+face.jpeg,Real,Real,0.9921,0.0079,True,Real,0.9952,0.0048,True,0.0048,0.35,likely_camera_origin,0.0964,Real,True,False,False,Real,True
 real+metadata-place-face.jpeg,Real,Real,0.9889,0.0111,True,Real,0.9953,0.0047,True,,0.35,likely_camera_origin,0.0964,Real,True,False,False,Real,True
