@@ -96,7 +96,7 @@ class DeepfakeClassifier:
         idx = int(np.argmax(scores))
         face_certainty = float(np.clip(scores[idx], 0.0001, 0.9999))
 
-        if face_certainty < 0.90:
+        if face_certainty < 0.75:
             return {"label": "No Face", "confidence": round(face_certainty, 4), "bbox": None}
 
         # Convert (x, y, w, h) → (x1, y1, x2, y2)
@@ -150,10 +150,11 @@ class DeepfakeClassifier:
             face_res = self.predict_face(image)
             landmark_res = self.predict_landmark(image)
 
-            has_face = face_res["confidence"] >= 0.90
+            has_face = face_res["confidence"] >= 0.75
             has_landmark = landmark_res["label"] not in ["Unknown", "None", "N/A"] and landmark_res.get("confidence", 0.0) >= 0.50
 
             results["deepfake_analysis"] = {
+                "is_deepfake": has_face or has_landmark,
                 "has_face": has_face,
                 "has_place": has_landmark,
                 "face_analysis": face_res,
