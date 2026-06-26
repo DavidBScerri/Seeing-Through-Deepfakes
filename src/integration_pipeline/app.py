@@ -29,6 +29,24 @@ from src.deepfake_module.gradcam_face_analysis import compute_occlusion_saliency
 _active_server = None
 _server_thread = None
 
+# --- CONFIGURATION VARIABLES ---
+fusion_strategy = "weighted_average"
+
+w_meta = 0.30
+w_visual = 0.70
+wa_threshold = 0.55
+meta_accuracy = 0.70
+visual_accuracy = 0.83
+
+ct_meta_thresh = 0.70
+ct_visual_thresh = 0.65
+
+bayes_prior = 0.50
+bayes_threshold = 0.55
+
+face_padding = 0.30
+# -------------------------------
+
 
 class PipelineRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -181,8 +199,8 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
     cropped_gradcam_b64 = None
     
     if bbox is not None:
-        face_padding = float(params.get("face_padding", 0.30))
-        cropped_face = crop_face_region(pil_image, bbox, padding=face_padding)
+        face_padding_val = face_padding
+        cropped_face = crop_face_region(pil_image, bbox, padding=face_padding_val)
         
         buffered = io.BytesIO()
         cropped_face.save(buffered, format="JPEG")
@@ -218,27 +236,27 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             cropped_gradcam_b64 = None
 
     # Decision fusion
-    strategy_name = params.get("fusion_strategy", "weighted_average")
+    strategy_name = fusion_strategy
     if strategy_name == "weighted_average":
         strategy = get_fusion_strategy(
             "weighted_average",
-            w_meta=float(params.get("w_meta", 0.30)),
-            w_visual=float(params.get("w_visual", 0.70)),
-            decision_threshold=float(params.get("wa_threshold", 0.50)),
-            meta_accuracy=float(params.get("meta_accuracy", 0.70)),
-            visual_accuracy=float(params.get("visual_accuracy", 0.83)),
+            w_meta=w_meta,
+            w_visual=w_visual,
+            decision_threshold=wa_threshold,
+            meta_accuracy=meta_accuracy,
+            visual_accuracy=visual_accuracy,
         )
     elif strategy_name == "conservative_threshold":
         strategy = get_fusion_strategy(
             "conservative_threshold",
-            meta_threshold=float(params.get("ct_meta_thresh", 0.70)),
-            visual_threshold=float(params.get("ct_visual_thresh", 0.65)),
+            meta_threshold=ct_meta_thresh,
+            visual_threshold=ct_visual_thresh,
         )
     elif strategy_name == "bayesian":
         strategy = get_fusion_strategy(
             "bayesian",
-            prior=float(params.get("bayes_prior", 0.50)),
-            decision_threshold=float(params.get("bayes_threshold", 0.50)),
+            prior=bayes_prior,
+            decision_threshold=bayes_threshold,
         )
     else:
         raise ValueError(f"Unknown fusion strategy '{strategy_name}'")
@@ -260,10 +278,10 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
         has_place = da.get("has_place", False) if da else False
 
         if is_deepfake:
-            verdict = "Probable Deepfake (AI-generated image containing identifiable face/place)"
+            verdict = "Potential Deepfake"
             verdict_type = "deepfake"
         else:
-            verdict = "Probably AI-generated, but not necessarily a deepfake (no face or landmark detected)"
+            verdict = "Likely AI Generated"
             verdict_type = "ai_generated"
 
         deepfake_result_data = {
@@ -273,7 +291,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             "landmark_analysis": da.get("landmark_analysis") if da else None,
         }
     else:
-        verdict = f"Probably Real (confidence: {1 - fusion_result.ai_probability:.2%})"
+        verdict = f"Likely Real (confidence: {1 - fusion_result.ai_probability:.2%})"
         verdict_type = "real"
 
     meta_features = meta_result.features
