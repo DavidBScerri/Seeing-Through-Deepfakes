@@ -133,6 +133,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
     # Metadata analysis (needs file path for exiftool)
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp.write(file_data)
+        tmp.flush()
         tmp_path = tmp.name
 
     try:
@@ -254,22 +255,11 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
         deepfake_result = deepfake_classifier.predict(pil_image)
         da = deepfake_result.get("deepfake_analysis")
         
-        deepfake_threshold = float(params.get("deepfake_threshold", 0.50))
-        
+        is_deepfake = da.get("is_deepfake", False) if da else False
         has_face = da.get("has_face", False) if da else False
-        is_face_deepfake = False
-        if has_face and cropped_visual_ai_prob is not None:
-            if cropped_visual_ai_prob >= deepfake_threshold:
-                is_face_deepfake = True
-
         has_place = da.get("has_place", False) if da else False
-        is_place_deepfake = False
-        if has_place:
-            landmark_conf = da.get("landmark_analysis", {}).get("confidence", 0.0)
-            if landmark_conf >= deepfake_threshold:
-                is_place_deepfake = True
 
-        if is_face_deepfake or is_place_deepfake:
+        if is_deepfake:
             verdict = "Probable Deepfake (AI-generated image containing identifiable face/place)"
             verdict_type = "deepfake"
         else:
@@ -404,7 +394,7 @@ if __name__ == "__main__":
 
     print("Loading visual classifier...")
     visual_model = VisualClassifier(
-        model_name_or_path="dima806/ai_vs_human_generated_image_detection",
+        model_name_or_path="dima806/ai_vs_real_image_detection",
         delta_path=str(visual_delta_path),
     )
 
