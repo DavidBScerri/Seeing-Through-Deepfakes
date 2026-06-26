@@ -301,31 +301,14 @@ def analyse_and_visualise(
     gc_results = compute_detection_region_analysis(face_detector, image, boxes, probs)
 
     # ── Build figure ──
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     fig.suptitle(
         f"{fname}\nYuNet Face Confidence: {face_conf:.4f}",
         fontsize=14, fontweight="bold", y=1.05,
     )
 
-    # Panel 1 — Original + bounding boxes
+    # Panel 1 — Global Saliency
     ax = axes[0]
-    ax.imshow(image_np)
-    if has_det:
-        for bx, pr in zip(boxes, probs):
-            x1, y1, x2, y2 = bx
-            colour = "lime" if pr >= 0.9 else ("orange" if pr >= 0.5 else "red")
-            ax.add_patch(
-                Rectangle((x1, y1), x2 - x1, y2 - y1,
-                           linewidth=2, edgecolor=colour, facecolor="none")
-            )
-            ax.text(x1, y1 - 5, f"{pr:.3f}", color=colour,
-                    fontsize=10, fontweight="bold",
-                    bbox=dict(facecolor="black", alpha=0.6, pad=1))
-    ax.set_title("Original + Face Detection", fontsize=12)
-    ax.axis("off")
-
-    # Panel 2 — Global Saliency
-    ax = axes[1]
     ax.imshow(_overlay_heatmap(image_np, saliency_map, alpha=0.5, cmap="hot"))
     ax.set_title(
         "Global Occlusion Saliency\n"
@@ -334,8 +317,8 @@ def analyse_and_visualise(
     )
     ax.axis("off")
 
-    # Panel 3 — Region Saliency
-    ax = axes[2]
+    # Panel 2 — Region Saliency
+    ax = axes[1]
     if gc_results:
         combined_gcam = np.zeros((h, w), dtype=np.float32)
         for gc in gc_results:
