@@ -1,13 +1,13 @@
 filename,expected,base_prediction,base_confidence,base_ai_prob,base_correct,ft_prediction,ft_confidence,ft_ai_prob,ft_correct,cropped_ai_prob,meta_ai_prob,meta_decision,fused_ai_prob,fused_label,fused_correct,has_face,has_place,verdict,verdict_correct
-ai+metadata-place-face.png,AI Generated,Real,0.9814,0.0186,False,Real,0.9942,0.0058,False,,0.99,likely_ai_generated,0.2671,Real,False,False,False,Real,False
-ai-metadata-place-face.png,AI Generated,Real,0.9814,0.0186,False,Real,0.9942,0.0058,False,,0.5,uncertain,0.137,Real,False,False,False,Real,False
-deepfake+metadata+place-face.png,AI Generated,Real,0.9906,0.0094,False,Real,0.9949,0.0051,False,,0.99,likely_ai_generated,0.2666,Real,False,False,False,Real,False
-deepfake+metadata-place+face.png,AI Generated,Real,0.992,0.008,False,Real,0.995,0.005,False,0.0049,0.5,uncertain,0.1364,Real,False,False,False,Real,False
-deepfake-metadata+place-face.png,AI Generated,Real,0.9906,0.0094,False,Real,0.9949,0.0051,False,,0.53,uncertain,0.1445,Real,False,False,False,Real,False
-deepfake-metadata-place+face.png,AI Generated,Real,0.992,0.008,False,Real,0.995,0.005,False,0.0049,0.5,uncertain,0.1364,Real,False,False,False,Real,False
-real+metadata+place-face.jpg,Real,Real,0.9864,0.0136,True,Real,0.9946,0.0054,True,,0.35,likely_camera_origin,0.0969,Real,True,False,False,Real,True
-real+metadata-place+face.jpeg,Real,Real,0.9921,0.0079,True,Real,0.9952,0.0048,True,0.0048,0.35,likely_camera_origin,0.0964,Real,True,False,False,Real,True
-real+metadata-place-face.jpeg,Real,Real,0.9889,0.0111,True,Real,0.9953,0.0047,True,,0.35,likely_camera_origin,0.0964,Real,True,False,False,Real,True
-real-metadata+place-face.jpg,Real,Real,0.9859,0.0141,True,Real,0.9946,0.0054,True,,0.5,uncertain,0.1367,Real,True,False,False,Real,True
-real-metadata-place+face.jpg,Real,Real,0.9916,0.0084,True,Real,0.995,0.005,True,0.005,0.5,uncertain,0.1364,Real,True,False,False,Real,True
-real-metadata-place-face.jpg,Real,Real,0.9903,0.0097,True,Real,0.9949,0.0051,True,,0.5,uncertain,0.1365,Real,True,False,False,Real,True
+ai+metadata-place-face.png,AI Generated,Real,0.5103,0.4897,False,AI Generated,0.8264,0.8264,True,,0.99,likely_ai_generated,0.8695,AI Generated,True,False,False,AI Generated,True
+ai-metadata-place-face.png,AI Generated,Real,0.5103,0.4897,False,AI Generated,0.8264,0.8264,True,,0.5,uncertain,0.7405,AI Generated,True,False,False,AI Generated,True
+deepfake+metadata+place-face.png,AI Generated,AI Generated,0.5713,0.5713,True,Real,0.9375,0.0625,False,,0.99,likely_ai_generated,0.3066,Real,False,False,False,Real,False
+deepfake+metadata-place+face.png,AI Generated,AI Generated,0.8064,0.8064,True,Real,0.9332,0.06679999999999997,False,0.0534,0.99,likely_ai_generated,0.3097,Real,False,False,False,Real,False
+deepfake-metadata+place-face.png,AI Generated,AI Generated,0.5713,0.5713,True,Real,0.9375,0.0625,False,,0.53,uncertain,0.1855,Real,False,False,False,Real,False
+deepfake-metadata-place+face.png,AI Generated,AI Generated,0.8064,0.8064,True,Real,0.9332,0.06679999999999997,False,0.0534,0.5,uncertain,0.1808,Real,False,False,False,Real,False
+real+metadata+place-face.jpg,Real,Real,0.5264,0.4736,True,Real,0.854,0.14600000000000002,True,,0.35,likely_camera_origin,0.1997,Real,True,False,False,Real,True
+real+metadata-place+face.jpeg,Real,AI Generated,0.9615,0.9615,False,Real,0.7083,0.29169999999999996,True,0.06310000000000004,0.35,likely_camera_origin,0.307,Real,True,False,False,Real,True
+real+metadata-place-face.jpeg,Real,AI Generated,0.9935,0.9935,False,Real,0.8853,0.11470000000000002,True,,0.35,likely_camera_origin,0.1766,Real,True,False,False,Real,True
+real-metadata+place-face.jpg,Real,Real,0.5135,0.48650000000000004,True,Real,0.7832,0.2168,True,,0.5,uncertain,0.2913,Real,True,False,False,Real,True
+real-metadata-place+face.jpg,Real,AI Generated,0.9659,0.9659,False,Real,0.6124,0.38759999999999994,True,0.06669999999999998,0.5,uncertain,0.4172,Real,True,False,False,Real,True
+real-metadata-place-face.jpg,Real,AI Generated,0.9899,0.9899,False,Real,0.8022,0.19779999999999998,True,,0.5,uncertain,0.2773,Real,True,False,False,Real,True

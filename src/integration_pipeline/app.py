@@ -34,9 +34,9 @@ fusion_strategy = "weighted_average"
 
 w_meta = 0.30
 w_visual = 0.70
-wa_threshold = 0.55
+wa_threshold = 0.25
 meta_accuracy = 0.70
-visual_accuracy = 0.83
+visual_accuracy = 0.84
 
 ct_meta_thresh = 0.70
 ct_visual_thresh = 0.65
