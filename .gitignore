@@ -40,3 +40,4 @@ wandb/
 **/data/visual/deepfakejudge/
 **/data/visual/julienlucas/
 .cache/
+graphify-out/
