@@ -6,7 +6,7 @@ A multi-module detection system that combines visual classification, metadata fo
 
 - **Visual Module** — Fine-tuned ViT classifier for distinguishing AI-generated images from real photographs.
 - **Metadata Module** — EXIF/C2PA metadata extraction and heuristic scoring via ExifTool.
-- **Deepfake Module** — Face detection (MTCNN), scene classification (Places365), and landmark retrieval (DINOv2 + FAISS).
+- **Deepfake Module** — Face detection (YuNet), scene classification (Places365), and landmark retrieval (DINOv2 + FAISS).
 - **Integration Pipeline** — Decision-fusion engine with a web interface that combines all module outputs into a single verdict.
 
 ## Setup
