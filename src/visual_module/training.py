@@ -65,7 +65,9 @@ def freeze_encoder_layers(model, num_layers_to_freeze=10):
           f"({100 * trainable / total:.1f}%)")
 
 
-BASE_MODEL_ID = "dima806/ai_vs_human_generated_image_detection"
+# Canonical base for ALL fine-tuning going forward (David, 2026-07-19):
+# the run_01 deltas and the report's Stage-1/Stage-2 results use this base.
+BASE_MODEL_ID = "dima806/ai_vs_real_image_detection"
 
 
 def load_model_from(source="base", device=None):

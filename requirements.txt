@@ -1,11 +1,8 @@
 pydantic>=2.0.0
-invisible-watermark
 opencv-python
 pillow
 numpy
-PyWavelets
-scipy
-torch 
+torch
 torchvision
 huggingface_hub
 datasets
@@ -15,4 +12,8 @@ ipykernel
 ipywidgets
 transformers
 accelerate>=1.1.0
-birder
+faiss-cpu
+matplotlib
+pandas
+seaborn
+pytest

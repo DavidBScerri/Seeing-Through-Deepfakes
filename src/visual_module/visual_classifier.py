@@ -6,7 +6,7 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification
 class VisualClassifier:
     def __init__(
         self,
-        model_name_or_path="dima806/ai_vs_human_generated_image_detection",
+        model_name_or_path="dima806/ai_vs_real_image_detection",
         delta_path=None,
     ):
         """
@@ -127,7 +127,16 @@ def save_weight_delta(
     return output_path, size_mb
 
 
-def load_weight_delta(model, delta_path, device=None):
+def get_delta_base_model(delta_path):
+    """
+    Returns the base-model name recorded in a weight-delta checkpoint,
+    or None for legacy deltas that predate the field.
+    """
+    checkpoint = torch.load(delta_path, map_location="cpu", weights_only=False)
+    return checkpoint.get("base_model") or None
+
+
+def load_weight_delta(model, delta_path, device=None, force=False):
     """
     Applies a weight delta to an already-loaded base model in-place.
     Supports int8-quantised and legacy float16 formats.
@@ -136,18 +145,42 @@ def load_weight_delta(model, delta_path, device=None):
         model:      The base model instance (weights updated in-place).
         delta_path: Path to the .pt file created by save_weight_delta().
         device:     torch.device to map tensors onto (defaults to CPU).
+        force:      Apply the delta even if the checkpoint records a
+                    different base model. A delta applied to the wrong base
+                    produces a model that is neither the base nor the
+                    fine-tuned one, so this is refused by default.
+
+    Raises:
+        ValueError: If the checkpoint's recorded base model differs from
+                    the loaded model and force is False.
     """
     checkpoint = torch.load(delta_path, map_location=device or "cpu", weights_only=False)
     delta      = checkpoint["delta"]
     fmt        = checkpoint.get("dtype", "float16")
-    
-    if "base_model" in checkpoint:
-        expected_base = checkpoint["base_model"]
-        if hasattr(model, "name_or_path") and model.name_or_path != expected_base:
-            print(f"Warning: Delta was created for '{expected_base}', but applied to '{model.name_or_path}'.")
-        elif hasattr(model, "config") and hasattr(model.config, "_name_or_path") and model.config._name_or_path != expected_base:
-            print(f"Warning: Delta was created for '{expected_base}', but applied to '{model.config._name_or_path}'.")
-            
+
+    expected_base = checkpoint.get("base_model")
+    if expected_base:
+        actual_base = getattr(model, "name_or_path", None) or getattr(
+            getattr(model, "config", None), "_name_or_path", None
+        )
+        if actual_base != expected_base:
+            if actual_base:
+                msg = (
+                    f"Delta '{delta_path}' was created for base model '{expected_base}', "
+                    f"but is being applied to '{actual_base}'. "
+                    f"Load the matching base (see get_delta_base_model), or pass force=True."
+                )
+            else:
+                msg = (
+                    f"Delta '{delta_path}' requires base model '{expected_base}', but the "
+                    f"loaded model exposes no name_or_path to verify against. "
+                    f"Pass force=True to apply anyway."
+                )
+            if force:
+                print(f"Warning (forced): {msg}")
+            else:
+                raise ValueError(msg)
+
     state = model.state_dict()
 
     for key, payload in delta.items():

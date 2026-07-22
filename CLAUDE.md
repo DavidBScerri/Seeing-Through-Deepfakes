@@ -33,8 +33,8 @@ There is no build, lint, or test command. Tests don't exist yet (GAPS.md #3 spec
 
 ## Gotchas
 
-- **Two dima806 base models exist**: `ai_vs_human_generated_image_detection` and `ai_vs_real_image_detection`. A weight delta only works on the base recorded in its checkpoint (`torch.load(p)["base_model"]`). `load_weight_delta` merely WARNS on mismatch — check pairing yourself. `app.py` currently pairs them wrongly (GAPS.md #1).
-- **Decision thresholds differ per entry point** (0.55 fusion default / 0.25 app / 0.45 bulk notebook / 0.5 in the report). Don't harmonise on your own initiative — these are empirical values; ask David which is canonical (GAPS.md #2).
+- **The canonical base model is `dima806/ai_vs_real_image_detection` everywhere** (David, 2026-07-19), paired with the `run_01_stage2A` delta. The other repo (`ai_vs_human_generated_image_detection`) only survives inside the run_02–04 delta checkpoints. `load_weight_delta` now RAISES on a base mismatch (`force=True` to override); `app.py` derives the base from the delta via `get_delta_base_model`.
+- **The canonical fused decision threshold is 0.55** (David, 2026-07-19), set in `src/integration_pipeline/config.py` and the notebook config cells. The report's printed 0.5 predates this; historic 0.25/0.45 values were testing artefacts from the mispaired-model era. Don't change it without David.
 - `gradcam_*_analysis.py` files implement **occlusion saliency**, not Grad-CAM. And `gradcam_landmark_analysis.py` can only be run from inside `src/deepfake_module/` (bare local import, GAPS.md #8).
 - `DeepfakeClassifier.predict()` without a `visual_classifier` arg always runs the analysis (its internal gate is a no-op); the real proportionality gate is `fusion_result.is_ai` in `app.py`.
 - Fine-tuned models are stored ONLY as int8 weight deltas in `src/visual_module/fine_tuned_model_delta/`; full checkpoints under `outputs/models/` are gitignored and may not exist on a fresh clone.

@@ -14,15 +14,25 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 import glob
 import math
+from pathlib import Path
+
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from PIL import Image
 import torch
 
-from deepfake_classifier import LandmarkIndex
+# Bootstrap the project root so the package import below works both when
+# imported as src.deepfake_module.gradcam_landmark_analysis and when run
+# standalone / via %run from inside src/deepfake_module (same pattern as app.py).
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.deepfake_module.deepfake_classifier import LandmarkIndex
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 

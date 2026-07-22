@@ -8,21 +8,59 @@ import json
 from PIL import Image
 
 
-def _get_yunet_model_path():
-    """Returns the path to the YuNet ONNX model, downloading it if necessary."""
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(module_dir, "models", "face_detection_yunet_2023mar.onnx")
+# Pinned to a specific opencv_zoo commit and checksum so a moved/changed
+# upstream file cannot silently alter face-detection behaviour between runs.
+_YUNET_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/"
+    "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+)
+_YUNET_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+
+
+def _sha256_of(path):
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def _get_yunet_model_path(model_path=None):
+    """
+    Returns the path to the YuNet ONNX model, downloading it (with checksum
+    verification) if missing. An existing file is also verified on every
+    call: a mismatch is reported loudly but the file is NOT deleted or
+    replaced — committed model artefacts must never be overwritten
+    automatically (see CLAUDE.md rules).
+    """
+    if model_path is None:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(module_dir, "models", "face_detection_yunet_2023mar.onnx")
 
     if not os.path.exists(model_path):
         import urllib.request
-        url = (
-            "https://github.com/opencv/opencv_zoo/raw/main/"
-            "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
-        )
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         print(f"Downloading YuNet model to {model_path} …")
-        urllib.request.urlretrieve(url, model_path)
-        print("Download complete.")
+        tmp_path = model_path + ".download"
+        try:
+            urllib.request.urlretrieve(_YUNET_URL, tmp_path)
+            digest = _sha256_of(tmp_path)
+            if digest != _YUNET_SHA256:
+                raise RuntimeError(
+                    f"YuNet download failed checksum verification: expected {_YUNET_SHA256}, got {digest}."
+                )
+            os.replace(tmp_path, model_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        print("Download complete (checksum verified).")
+    else:
+        digest = _sha256_of(model_path)
+        if digest != _YUNET_SHA256:
+            print(
+                f"WARNING: YuNet model at {model_path} does not match the pinned checksum "
+                f"(expected {_YUNET_SHA256}, got {digest}). Face-detection results may not "
+                f"be reproducible against the reported figures. If this is unintentional, "
+                f"delete the file so a verified copy is re-downloaded."
+            )
 
     return model_path
 
@@ -119,49 +157,41 @@ class DeepfakeClassifier:
         """
         return self.landmark_index.search(image, top_k=top_k, similarity_threshold=similarity_threshold)
 
-    def predict(self, image, visual_classifier=None, threshold=0.5):
+    def predict(self, image):
         """
-        Full pipeline: optionally gate on visual classifier confidence,
-        then run all deepfake sub-models.
+        Runs the full deepfake analysis (face + landmark sub-models).
+
+        The proportionality gate lives with the caller: this module only
+        runs on images already flagged AI-positive by decision fusion
+        (``fusion_result.is_ai`` in app.py / the notebooks), so no internal
+        visual-classifier gating happens here.
 
         Args:
-            image:             A PIL Image object.
-            visual_classifier: Optional VisualClassifier instance for gating.
-            threshold:         Confidence threshold for triggering deepfake analysis.
+            image: A PIL Image object.
 
         Returns:
-            dict with keys ``visual_classification`` and ``deepfake_analysis``.
+            dict with keys ``visual_classification`` (always None, kept for
+            backward compatibility) and ``deepfake_analysis``.
         """
         if image.mode != 'RGB':
             image = image.convert('RGB')
 
-        results = {
+        face_res = self.predict_face(image)
+        landmark_res = self.predict_landmark(image)
+
+        has_face = face_res["confidence"] >= 0.75
+        has_landmark = landmark_res["label"] not in ["Unknown", "None", "N/A"] and landmark_res.get("confidence", 0.0) >= 0.50
+
+        return {
             "visual_classification": None,
-            "deepfake_analysis": None
-        }
-
-        ai_score = threshold
-        if visual_classifier:
-            vis_res = visual_classifier.predict(image)
-            results["visual_classification"] = vis_res
-            ai_score = vis_res["confidence"] if vis_res["prediction"] == "AI Generated" else (1 - vis_res["confidence"])
-
-        if ai_score >= threshold:
-            face_res = self.predict_face(image)
-            landmark_res = self.predict_landmark(image)
-
-            has_face = face_res["confidence"] >= 0.75
-            has_landmark = landmark_res["label"] not in ["Unknown", "None", "N/A"] and landmark_res.get("confidence", 0.0) >= 0.50
-
-            results["deepfake_analysis"] = {
+            "deepfake_analysis": {
                 "is_deepfake": has_face or has_landmark,
                 "has_face": has_face,
                 "has_place": has_landmark,
                 "face_analysis": face_res,
-                "landmark_analysis": landmark_res
-            }
-
-        return results
+                "landmark_analysis": landmark_res,
+            },
+        }
 
 
 class LandmarkIndex:

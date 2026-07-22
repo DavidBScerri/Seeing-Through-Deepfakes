@@ -100,9 +100,9 @@ From the work placement report §3.4 — do not approximate:
 
 ## Surprises / things that will trip you up
 
-- **Two different base models are in play**: `dima806/ai_vs_human_generated_image_detection` (training notebook, `training.py`, `visual_classifier.py` default, run_02–04 deltas) vs `dima806/ai_vs_real_image_detection` (`app.py`, `bulk_evaluation.ipynb`, run_01 deltas). They are different HF repos. A delta only makes sense on its recorded base — check `checkpoint["base_model"]` before pairing.
+- **The canonical base model is `dima806/ai_vs_real_image_detection`** (David, 2026-07-19) — used by `visual_classifier.py`/`training.py` defaults, both pipeline entry points, and the run_01 deltas (`run_01_stage2A` is the report's Stage-2 model). The run_02–04 deltas were trained on the *other* repo (`ai_vs_human_generated_image_detection`) and only load on that base; `load_weight_delta` raises on mismatch and `get_delta_base_model` reads the recorded base.
 - **"gradcam" files contain no Grad-CAM** — occlusion saliency replaced Grad-CAM in `b4b11ef`; filenames were kept.
-- **Decision thresholds differ per entry point**: fusion.py default 0.55, app.py 0.25, bulk_evaluation.ipynb 0.45, report documents 0.5. These are empirical values from David's experiments — ask him before "fixing".
+- **The canonical fused decision threshold is 0.55** (David, 2026-07-19; centralised in `src/integration_pipeline/config.py`). The report's printed 0.5 predates this decision; the old 0.25 (app) / 0.45 (bulk notebook) were testing values from the mispaired-model era.
 - **`DeepfakeClassifier.predict()`'s internal visual gating is a no-op** as called from `app.py`: without a `visual_classifier` arg, `ai_score = threshold`, so the gate always passes. The real gate is fusion's `is_ai` in the caller.
 - **Sample-image filename convention** encodes ground truth: `{real|ai|deepfake}{+|-}metadata{+|-}place{+|-}face.ext` (`+` = has that property). `bulk_evaluation.ipynb` infers labels from the prefix.
 - **The repo lives inside iCloud Drive** with an 88 GB gitignored `data/` directory. Paths contain spaces (`Mobile Documents`, `com~apple~CloudDocs`) — always quote them in shell commands.

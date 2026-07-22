@@ -6,6 +6,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 
 ## 1. The web app applies a fine-tuned delta to the WRONG base model — SEVERITY: CRITICAL (correctness)
 
+**Status (2026-07-19): FIXED.** `app.py` now derives the base model from the delta checkpoint (`get_delta_base_model`) and loads `run_01_stage2A` (the report's Stage-2 model on `dima806/ai_vs_real_image_detection`, matching bulk_evaluation.ipynb). `load_weight_delta()` raises `ValueError` on base mismatch unless `force=True`. Covered by `tests/test_weight_delta.py`. David confirmed (2026-07-19): `run_01_stage2A` on `dima806/ai_vs_real_image_detection` is canonical everywhere — `visual_classifier.py`/`training.py` defaults and the visual-module notebooks were updated accordingly.
+
 **What:** `src/integration_pipeline/app.py:409–417` loads base `dima806/ai_vs_real_image_detection` and applies `run_02_ft_genimage_w_julienlucas_weight_delta.pt`. That delta's own checkpoint metadata says it was created for `dima806/ai_vs_human_generated_image_detection` (verified: `torch.load(...)["base_model"]`). These are two different HF model repos. `load_weight_delta()` (`src/visual_module/visual_classifier.py:144–149`) detects the mismatch but only **prints a warning** and applies the delta anyway — producing a model that is neither the base nor the fine-tuned one. Every demo verdict and any evaluation run through `app.py` since this pairing is scientifically suspect.
 
 **Why it matters:** This silently corrupts the headline results of the thesis prototype. The deltas exist precisely to reproduce fine-tuned models exactly.
@@ -15,6 +17,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 ---
 
 ## 2. Decision thresholds disagree across every entry point — SEVERITY: HIGH (correctness/reproducibility)
+
+**Status (2026-07-19): FIXED.** `src/integration_pipeline/config.py` centralises the constants, and David confirmed the canonical fused decision threshold is **0.55** (the 0.25 app value was temporary testing from the mispaired-model era). Now 0.55 in config.py, fusion.py default, bulk_evaluation.ipynb, and integration_pipeline.ipynb. The report's printed 0.5 predates this — report 0.55 in the thesis write-up.
 
 **What:** The fused-AI decision threshold is 0.5 in the report (and skill reference), **0.55** default in `fusion.py:109`, **0.25** in `app.py:37` (`wa_threshold`), and **0.45** in `bulk_evaluation.ipynb` config cell. `visual_accuracy` is 0.83 in `fusion.py` vs 0.84 in `app.py`/notebook. `metadata_extraction.py:decide()` uses its own 0.80/0.40 cutoffs.
 
@@ -26,6 +30,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 
 ## 3. Zero automated tests — SEVERITY: HIGH
 
+**Status (2026-07-19): FIXED.** `tests/` added (55 tests): fusion strategies pinned to report Annex II (4) values, metadata scoring incl. GAPS #7 regressions, delta round-trip + mismatch guard, multipart parsing, YuNet checksum. `pytest` added to requirements. Run: `python -m pytest tests/`.
+
 **What:** No test files anywhere. The pure-function core — all three `FusionStrategy.fuse()` implementations, `extract_visual_ai_probability()`, `crop_face_region()` (`fusion.py`), `score_features()`, `build_features()`, `flatten_metadata()`, `decide()` (`metadata_extraction.py`), and `save_weight_delta`/`load_weight_delta` round-tripping — is trivially testable without models or network.
 
 **Why it matters:** These functions ARE the thesis contribution. Gap #1 would have been caught by a delta round-trip test; gap #2 by a threshold assertion. Any refactor now is unguarded.
@@ -35,6 +41,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 ---
 
 ## 4. `requirements.txt` is wrong in both directions — SEVERITY: HIGH (fresh install fails)
+
+**Status (2026-07-19): FIXED.** Added `faiss-cpu`, `matplotlib`, `pandas`, `seaborn`, `pytest`; removed `invisible-watermark`, `PyWavelets`, `scipy`, `birder` (grep-confirmed unused).
 
 **What:** Missing packages that are imported: **`faiss-cpu`** (`deepfake_classifier.py`, `initialise_index.py` — the app cannot start without it), **`matplotlib`** (`training.py`, `gradcam_*`, `app.py` via `_overlay_heatmap`), **`pandas`** (`build_combined_dataset.py`), **`seaborn`** (eval notebook). Listed but never imported anywhere: `invisible-watermark`, `PyWavelets`, `scipy`, `birder` (likely relics of an abandoned watermark-detection direction). ExifTool's external-binary requirement is only mentioned in the README.
 
@@ -46,6 +54,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 
 ## 5. README describes a module that no longer exists — SEVERITY: MEDIUM (stale docs)
 
+**Status (2026-07-19): FIXED.** README module list matches reality (YuNet, DINOv2+FAISS, occlusion saliency); bulk_evaluation.ipynb intro now documents the `real|ai|deepfake` prefixes and `ai_vs_real_image_detection` base.
+
 **What:** `README.md` says the Deepfake Module includes "scene classification (Places365)". Places365 was removed in commit `28c9503` ("remove scene analysis from deepfake pipeline"). The module is now YuNet + DINOv2/FAISS only. Similarly, `bulk_evaluation.ipynb`'s intro markdown says ground-truth prefixes are `fake`/`human` and the base model is `ai_vs_human_generated_image_detection`, but the code checks `deepfake`/`real`/`ai` prefixes and loads `ai_vs_real_image_detection`.
 
 **Why it matters:** First thing a new reader sees; misleads about actual capabilities and label conventions.
@@ -55,6 +65,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 ---
 
 ## 6. Hand-rolled multipart/form-data parser — SEVERITY: MEDIUM (fragile edge cases; low security exposure since localhost-only)
+
+**Status (2026-07-19): FIXED.** Multipart parsing now uses the stdlib email parser (binary-safe), uploads capped at 25 MB (413), temp-file suffix derived from the uploaded filename, `numpy` imported at module top, malformed bodies return JSON 400.
 
 **What:** `app.py:71–126` parses multipart bodies with `body.split(boundary)` and regexes.
 
@@ -66,6 +78,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 
 ## 7. Metadata heuristics have substring false positives — SEVERITY: MEDIUM
 
+**Status (2026-07-19): FIXED.** All AI keywords/binary markers match with word-boundary lookarounds ("influx"/"photosynthetic" no longer hit); `has_camera_claim` is tag-name-based ("Camera Raw" no longer counts); `has_gps` requires non-zero coordinate values (GPSVersionID excluded). Verified against the sample set: only change vs report Annex II (1) is `deepfake-metadata+place-face.png` 0.53→0.50 — its "c2pa" binary hit was random compressed pixel data (ExifTool finds no C2PA), i.e. a confirmed false positive; the decision stays "uncertain".
+
 **What:** In `metadata_extraction.py`: `"flux" in haystack` matches "influx"/"Fluxus"; `has_camera_claim = "captured" in values or "camera" in values` matches "Camera Raw" (an Adobe editor); `"synthetic"` matches "photosynthetic"; `has_gps` (`:203`) is true if any *key* contains "gps" even when GPS values are empty/zeroed; `scan_binary_markers()` greps the entire file body, so any ASCII occurrence of e.g. `flux` in compressed data scores as an AI marker.
 
 **Why it matters:** The metadata stream feeds fusion with `w_m·a_m` weight; systematic false positives on edited-but-real photos push fused scores up. The report already notes metadata "scores 0.99 whenever any AI marker is present" (see `ConservativeThresholdFusion` docstring) — this is part of why.
@@ -76,6 +90,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 
 ## 8. `gradcam_landmark_analysis.py` uses a non-package import — SEVERITY: MEDIUM (breaks as a module)
 
+**Status (2026-07-19): FIXED.** Package-style import with the same sys.path bootstrap app.py uses; works both as `src.deepfake_module.gradcam_landmark_analysis` and standalone/%run.
+
 **What:** `src/deepfake_module/gradcam_landmark_analysis.py:25` does `from deepfake_classifier import LandmarkIndex` (bare module name), so `from src.deepfake_module.gradcam_landmark_analysis import ...` fails with `ModuleNotFoundError` unless the CWD is the module directory. Its sibling `gradcam_face_analysis.py` avoids this only because it imports nothing local, and `app.py` imports it package-style.
 
 **Why it matters:** Inconsistent import styles mean code works in one notebook and breaks in another; anyone wiring landmark saliency into `app.py` (mirroring the face saliency) hits an immediate import error.
@@ -85,6 +101,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 ---
 
 ## 9. Dead code and duplicated logic — SEVERITY: LOW-MEDIUM (tech debt)
+
+**Status (2026-07-19): PARTIALLY DONE.** Vestigial gating params removed from `DeepfakeClassifier.predict()` (all callers pass only the image); app.py's two startup paths share `create_server()`; config constants centralised in config.py. Still open: `crop_face_region`/`_overlay_heatmap` relocation to a shared module, `_get_yunet_model_path` duplication in gradcam_face_analysis.py.
 
 **What:**
 - `DeepfakeClassifier.predict(visual_classifier=None, threshold=0.5)` (`deepfake_classifier.py:122–164`): when called without a classifier (as `app.py` does), `ai_score = threshold` so the gate is always true — vestigial gating logic that predates fusion-side gating.
@@ -120,6 +138,8 @@ Each gap: what it is, where, why it matters, and a fix scoped to a single small 
 ---
 
 ## 12. YuNet ONNX auto-download without checksum — SEVERITY: LOW (supply chain)
+
+**Status (2026-07-19): FIXED.** Download URL pinned to opencv_zoo commit `f12e127…` with SHA-256 verification (hash matches the committed file); existing files are verified on every load and a mismatch warns loudly (never auto-deleted, per the no-overwrite rule).
 
 **What:** `_get_yunet_model_path()` (`deepfake_classifier.py:11–27`) downloads the model from the `opencv_zoo` GitHub `main` branch at runtime if missing, with no hash verification and no pinned revision.
 

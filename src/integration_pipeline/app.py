@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import re
 import io
 import tempfile
 import socket
@@ -10,8 +9,11 @@ import threading
 import base64
 import atexit
 import traceback
+from email.parser import BytesParser
+from email.policy import default as _email_policy
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import numpy as np
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.metadata_module import analyse_image, AnalysisResult
+from src.integration_pipeline import config
 from src.integration_pipeline.fusion import (
     get_fusion_strategy,
     extract_visual_ai_probability,
@@ -28,24 +31,6 @@ from src.deepfake_module.gradcam_face_analysis import compute_occlusion_saliency
 
 _active_server = None
 _server_thread = None
-
-# --- CONFIGURATION VARIABLES ---
-fusion_strategy = "weighted_average"
-
-w_meta = 0.30
-w_visual = 0.70
-wa_threshold = 0.25
-meta_accuracy = 0.70
-visual_accuracy = 0.84
-
-ct_meta_thresh = 0.70
-ct_visual_thresh = 0.65
-
-bayes_prior = 0.50
-bayes_threshold = 0.55
-
-face_padding = 0.30
-# -------------------------------
 
 
 class PipelineRequestHandler(BaseHTTPRequestHandler):
@@ -68,68 +53,44 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Not Found")
 
+    def _send_json_error(self, status, message):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": message}).encode("utf-8"))
+
     def do_POST(self):
         if self.path == "/api/analyse":
             content_type = self.headers.get("Content-Type", "")
             if not content_type.startswith("multipart/form-data"):
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "Content-Type must be multipart/form-data"}).encode("utf-8"))
+                self._send_json_error(400, "Content-Type must be multipart/form-data")
                 return
 
             content_length = int(self.headers.get("Content-Length", 0))
+            if content_length <= 0:
+                self._send_json_error(400, "Missing or empty request body")
+                return
+            if content_length > config.MAX_UPLOAD_BYTES:
+                self._send_json_error(413, f"Upload exceeds {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
+                return
             body = self.rfile.read(content_length)
 
-            boundary_match = re.search(r'boundary=([^;]+)', content_type)
-            if not boundary_match:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "No boundary found in Content-Type"}).encode("utf-8"))
+            try:
+                file_data, filename, params = parse_multipart_form(body, content_type)
+            except Exception:
+                traceback.print_exc()
+                self._send_json_error(400, "Malformed multipart/form-data body")
                 return
 
-            boundary = b"--" + boundary_match.group(1).encode("utf-8")
-            parts = body.split(boundary)
-
-            file_data = None
-            params = {}
-
-            for part in parts:
-                if not part.strip() or part == b"--\r\n" or part == b"--":
-                    continue
-                
-                if b'\r\n\r\n' not in part:
-                    continue
-                
-                header_section, value_section = part.split(b'\r\n\r\n', 1)
-                
-                if header_section.startswith(b'\r\n'):
-                    header_section = header_section[2:]
-                if value_section.endswith(b'\r\n'):
-                    value_section = value_section[:-2]
-
-                headers_str = header_section.decode('utf-8', errors='ignore')
-
-                name_match = re.search(r'name="([^"]+)"', headers_str)
-                if not name_match:
-                    continue
-                name = name_match.group(1)
-
-                if 'filename="' in headers_str:
-                    file_data = value_section
-                else:
-                    params[name] = value_section.decode('utf-8', errors='ignore')
-
             if file_data is None:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "No file uploaded"}).encode("utf-8"))
+                self._send_json_error(400, "No file uploaded")
                 return
 
             try:
                 visual_classifier = self.server.visual_classifier
                 deepfake_classifier = self.server.deepfake_classifier
 
-                result = run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classifier)
+                result = run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classifier, filename=filename)
                 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -143,13 +104,66 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
 
 
-def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classifier):
+_ALLOWED_UPLOAD_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif", ".heic"}
+
+
+def parse_multipart_form(body: bytes, content_type: str) -> tuple[bytes | None, str | None, dict[str, str]]:
+    """
+    Parses a multipart/form-data body using the stdlib email parser
+    (boundary-safe for binary payloads, unlike naive splitting).
+
+    Returns:
+        (file_data, filename, params) — file_data/filename are None when
+        no file part is present.
+    """
+    msg = BytesParser(policy=_email_policy).parsebytes(
+        b"Content-Type: " + content_type.encode("utf-8", errors="ignore")
+        + b"\r\nMIME-Version: 1.0\r\n\r\n" + body
+    )
+
+    file_data = None
+    filename = None
+    params: dict[str, str] = {}
+
+    if not msg.is_multipart():
+        return None, None, params
+
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if name is None:
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        # get_filename() is None for plain fields; an empty string still
+        # marks a file part (some clients send filename=""), so compare
+        # against None rather than truthiness.
+        part_filename = part.get_filename()
+        if part_filename is not None:
+            file_data = payload
+            filename = part_filename
+        else:
+            params[str(name)] = payload.decode("utf-8", errors="ignore")
+
+    return file_data, filename, params
+
+
+def _temp_suffix_for(filename: str | None) -> str:
+    """ExifTool's handling is file-type dependent, so keep the uploaded extension when it's a known image type."""
+    if filename:
+        suffix = Path(filename).suffix.lower()
+        if suffix in _ALLOWED_UPLOAD_SUFFIXES:
+            return suffix
+    return ".png"
+
+
+def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classifier, filename=None):
     pil_image = Image.open(io.BytesIO(file_data))
     if pil_image.mode != "RGB":
         pil_image = pil_image.convert("RGB")
 
     # Metadata analysis (needs file path for exiftool)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=_temp_suffix_for(filename), delete=False) as tmp:
         tmp.write(file_data)
         tmp.flush()
         tmp_path = tmp.name
@@ -165,7 +179,6 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
 
     # Global YuNet Saliency Map for whole image
     try:
-        import numpy as np
         # Use large patch/stride for whole image speed
         patch_size = max(16, int(min(pil_image.size) / 16))
         stride = max(8, int(patch_size / 2))
@@ -199,8 +212,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
     cropped_gradcam_b64 = None
     
     if bbox is not None:
-        face_padding_val = face_padding
-        cropped_face = crop_face_region(pil_image, bbox, padding=face_padding_val)
+        cropped_face = crop_face_region(pil_image, bbox, padding=config.FACE_PADDING)
         
         buffered = io.BytesIO()
         cropped_face.save(buffered, format="JPEG")
@@ -236,27 +248,27 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             cropped_gradcam_b64 = None
 
     # Decision fusion
-    strategy_name = fusion_strategy
+    strategy_name = config.FUSION_STRATEGY
     if strategy_name == "weighted_average":
         strategy = get_fusion_strategy(
             "weighted_average",
-            w_meta=w_meta,
-            w_visual=w_visual,
-            decision_threshold=wa_threshold,
-            meta_accuracy=meta_accuracy,
-            visual_accuracy=visual_accuracy,
+            w_meta=config.W_META,
+            w_visual=config.W_VISUAL,
+            decision_threshold=config.WA_DECISION_THRESHOLD,
+            meta_accuracy=config.META_ACCURACY,
+            visual_accuracy=config.VISUAL_ACCURACY,
         )
     elif strategy_name == "conservative_threshold":
         strategy = get_fusion_strategy(
             "conservative_threshold",
-            meta_threshold=ct_meta_thresh,
-            visual_threshold=ct_visual_thresh,
+            meta_threshold=config.CT_META_THRESHOLD,
+            visual_threshold=config.CT_VISUAL_THRESHOLD,
         )
     elif strategy_name == "bayesian":
         strategy = get_fusion_strategy(
             "bayesian",
-            prior=bayes_prior,
-            decision_threshold=bayes_threshold,
+            prior=config.BAYES_PRIOR,
+            decision_threshold=config.BAYES_THRESHOLD,
         )
     else:
         raise ValueError(f"Unknown fusion strategy '{strategy_name}'")
@@ -361,9 +373,16 @@ class PipelineHTTPServer(HTTPServer):
         super().__init__(server_address, RequestHandlerClass)
 
 
+def create_server(visual_classifier, deepfake_classifier):
+    """Binds a PipelineHTTPServer on a free localhost port and returns (server, url)."""
+    port = find_free_port()
+    server = PipelineHTTPServer(('127.0.0.1', port), PipelineRequestHandler, visual_classifier, deepfake_classifier)
+    return server, f"http://127.0.0.1:{port}"
+
+
 def start_server_thread(visual_classifier, deepfake_classifier):
     global _active_server, _server_thread
-    
+
     if _active_server is not None:
         print("Stopping existing web server...")
         _active_server.shutdown()
@@ -373,8 +392,7 @@ def start_server_thread(visual_classifier, deepfake_classifier):
             _server_thread.join()
             _server_thread = None
 
-    port = find_free_port()
-    server = PipelineHTTPServer(('127.0.0.1', port), PipelineRequestHandler, visual_classifier, deepfake_classifier)
+    server, url = create_server(visual_classifier, deepfake_classifier)
     _active_server = server
 
     def serve():
@@ -383,7 +401,6 @@ def start_server_thread(visual_classifier, deepfake_classifier):
     _server_thread = threading.Thread(target=serve, daemon=True)
     _server_thread.start()
 
-    url = f"http://127.0.0.1:{port}"
     print(f"\nSeeing through Deepfakes web interface is live!")
     print(f"URL: {url}")
     print("Opening browser window automatically...")
@@ -403,16 +420,22 @@ def stop_server():
 
 if __name__ == "__main__":
     print("Starting in Standalone mode. Initializing models...")
-    from src.visual_module.visual_classifier import VisualClassifier
+    from src.visual_module.visual_classifier import VisualClassifier, get_delta_base_model
     from src.deepfake_module.deepfake_classifier import DeepfakeClassifier
 
-    visual_delta_path = PROJECT_ROOT / "src" / "visual_module" / "fine_tuned_model_delta" / "run_02_ft_genimage_w_julienlucas_weight_delta.pt"
+    # run_01_stage2A is the Stage-2 fine-tuned model reported in the work
+    # placement report (base: dima806/ai_vs_real_image_detection) and the one
+    # bulk_evaluation.ipynb evaluates. The run_02+ deltas were trained on the
+    # *other* dima806 base — the base is therefore always read from the delta
+    # checkpoint itself so the pairing cannot silently be wrong (GAPS.md #1).
+    visual_delta_path = PROJECT_ROOT / "src" / "visual_module" / "fine_tuned_model_delta" / "run_01_stage2A_ft_combined_weight_delta.pt"
     deepfake_index_path = PROJECT_ROOT / "src" / "deepfake_module" / "models" / "landmarks_index.faiss"
     deepfake_meta_path  = PROJECT_ROOT / "src" / "deepfake_module" / "models" / "landmarks_metadata.json"
 
-    print("Loading visual classifier...")
+    base_model = get_delta_base_model(str(visual_delta_path)) or "dima806/ai_vs_real_image_detection"
+    print(f"Loading visual classifier (base: {base_model})...")
     visual_model = VisualClassifier(
-        model_name_or_path="dima806/ai_vs_real_image_detection",
+        model_name_or_path=base_model,
         delta_path=str(visual_delta_path),
     )
 
@@ -422,10 +445,9 @@ if __name__ == "__main__":
         metadata_path=str(deepfake_meta_path),
     )
 
-    port = find_free_port()
-    server = PipelineHTTPServer(('127.0.0.1', port), PipelineRequestHandler, visual_model, deepfake_model)
-    print(f"\nStandalone server running at http://127.0.0.1:{port}")
-    webbrowser.open(f"http://127.0.0.1:{port}")
+    server, url = create_server(visual_model, deepfake_model)
+    print(f"\nStandalone server running at {url}")
+    webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
