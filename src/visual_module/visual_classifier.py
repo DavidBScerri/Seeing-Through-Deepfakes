@@ -1,6 +1,18 @@
 import os
+import json
+
 import torch
+import torch.nn as nn
 from transformers import AutoImageProcessor, AutoModelForImageClassification
+
+
+def resolve_device():
+    """Preferred torch device for this machine (MPS on Apple silicon)."""
+    return torch.device(
+        "mps" if torch.backends.mps.is_available()
+        else "cuda" if torch.cuda.is_available()
+        else "cpu"
+    )
 
 
 class VisualClassifier:
@@ -8,6 +20,7 @@ class VisualClassifier:
         self,
         model_name_or_path="dima806/ai_vs_real_image_detection",
         delta_path=None,
+        ai_label_index=None,
     ):
         """
         Initializes the visual classifier.
@@ -15,12 +28,10 @@ class VisualClassifier:
         Args:
             model_name_or_path: HuggingFace model ID or local path to a full model.
             delta_path: Optional path to a .pt delta file produced by save_weight_delta().
+            ai_label_index: Which logit index is the AI-generated class. Required
+                only for checkpoints whose id2label is a placeholder.
         """
-        self.device = torch.device(
-            "mps" if torch.backends.mps.is_available()
-            else "cuda" if torch.cuda.is_available()
-            else "cpu"
-        )
+        self.device = resolve_device()
         self.processor = AutoImageProcessor.from_pretrained(model_name_or_path)
         self.model = AutoModelForImageClassification.from_pretrained(
             model_name_or_path,
@@ -33,6 +44,22 @@ class VisualClassifier:
             print("Delta applied successfully.")
 
         self.model.eval()
+
+        # Some checkpoints ship placeholder labels ("LABEL_0"/"LABEL_1") rather
+        # than meaningful ones. Left alone, predict() matches neither "real" nor
+        # "human" and silently calls every image AI-generated, so require the
+        # caller to say which index is the AI class instead of guessing.
+        self.id2label = dict(self.model.config.id2label)
+        if any(str(v).lower().startswith("label_") for v in self.id2label.values()):
+            if ai_label_index is None:
+                raise ValueError(
+                    f"'{model_name_or_path}' exposes placeholder labels {self.id2label}. "
+                    f"Pass ai_label_index=0 or 1 to state which logit is the AI class."
+                )
+            self.id2label = {
+                ai_label_index: "AI-generated",
+                1 - ai_label_index: "Real",
+            }
 
     def predict(self, image):
         """
@@ -52,13 +79,22 @@ class VisualClassifier:
         with torch.no_grad():
             outputs = self.model(**inputs)
             logits = outputs.logits
-            probs = torch.nn.functional.softmax(logits, dim=-1)
-            
+
+            # Genuinely single-logit detectors express P(AI) as sigmoid(logit);
+            # expand to the two-class form the rest of the pipeline expects.
+            # (Note: a "num_classes": 1 key in config.json is a timm artefact and
+            # does not mean this branch applies — transformers reads num_labels.)
+            if logits.shape[-1] == 1:
+                ai_prob = torch.sigmoid(logits.squeeze(-1))
+                probs = torch.stack([1.0 - ai_prob, ai_prob], dim=-1)
+            else:
+                probs = torch.nn.functional.softmax(logits, dim=-1)
+
         max_prob, predicted_class_idx = torch.max(probs, dim=-1)
         max_prob = max_prob.item()
         predicted_class_idx = predicted_class_idx.item()
         
-        label = self.model.config.id2label[predicted_class_idx].lower()
+        label = self.id2label[predicted_class_idx].lower()
         
         if "human" in label or "real" in label:
             mapped_label = "Real"
@@ -69,8 +105,162 @@ class VisualClassifier:
             "prediction": mapped_label,
             "confidence": round(max_prob, 4),
             "raw_label": label,
-            "all_scores": {self.model.config.id2label[i]: round(probs[0][i].item(), 4) for i in range(len(probs[0]))}
+            "all_scores": {self.id2label[i]: round(probs[0][i].item(), 4) for i in range(len(probs[0]))}
         }
+
+
+# --------------------------------------------------------------------------- #
+# Community Forensics backend
+# --------------------------------------------------------------------------- #
+# Park & Owens, "Community Forensics: Using Thousands of Generators to Train
+# Fake Image Detectors" (arXiv:2411.04125). Official weights, MIT licensed:
+#   OwensLab/commfor-model-384  (ViT-S/16 @ 384, the paper's main checkpoint)
+#   OwensLab/commfor-model-224  (ViT-S/16 @ 224)
+#
+# The checkpoints are plain PyTorchModelHubMixin dumps of the upstream
+# `models.ViTClassifier` — a timm ViT with a 1-output head — so the class and
+# the eval transform are reproduced below rather than pulling in the upstream
+# repo, which drags in wandb/datasets/cv2 for training paths we never touch.
+# Both are verbatim reimplementations; see _CommForViT and _build_transform.
+#
+# NOTE: single logit. P(AI) = sigmoid(logit), NOT softmax over two classes.
+# The third-party re-upload buildborderless/CommunityForensics-DeepfakeDet-ViT
+# rewrites this head as a 2-class ViTForImageClassification and scores AUC 0.667
+# against 0.994 for these weights. Do not substitute it.
+
+COMMFOR_MODEL_384 = "OwensLab/commfor-model-384"
+COMMFOR_MODEL_224 = "OwensLab/commfor-model-224"
+
+# dataloader.determine_resize_crop_sizes(): input_size -> (resize, centre crop)
+_COMMFOR_SIZES = {224: (256, 224), 384: (440, 384)}
+
+
+class _CommForViT(nn.Module):
+    """
+    Architecture of upstream `models.ViTClassifier`, reduced to the inference
+    path. Attribute named `vit` so checkpoint keys ("vit.*") load strictly.
+
+    `pretrained=False`: upstream passes True to initialise from augreg ImageNet
+    weights before fine-tuning, but every parameter is then overwritten by the
+    checkpoint, so downloading them here would only cost a few hundred MB.
+    """
+
+    def __init__(self, model_size="small", input_size=384, patch_size=16, **_ignored):
+        super().__init__()
+        import timm
+
+        if input_size not in _COMMFOR_SIZES:
+            raise ValueError(f"Unsupported input_size {input_size}; expected 224 or 384.")
+        if model_size not in ("small", "tiny"):
+            raise ValueError(f"Unsupported model_size '{model_size}'; expected small or tiny.")
+
+        self.vit = timm.create_model(
+            f"vit_{model_size}_patch{patch_size}_{input_size}.augreg_in21k_ft_in1k",
+            pretrained=False,
+            num_classes=1,
+        )
+
+    def forward(self, x):
+        return self.vit(x)
+
+
+def _build_commfor_transform(input_size):
+    """
+    Upstream `dataloader.get_transform(mode='test')`, verbatim: resize the short
+    side, centre crop, scale to [0, 1], ImageNet normalisation.
+
+    Worth keeping faithful — the detector reads compression and resampling
+    artefacts, so a different resize or interpolation shifts its scores.
+    """
+    from torchvision import transforms
+
+    resize_size, crop_size = _COMMFOR_SIZES[input_size]
+    return transforms.Compose([
+        transforms.Resize(resize_size),
+        transforms.CenterCrop(crop_size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+
+class CommunityForensicsClassifier:
+    """
+    Out-of-the-box Community Forensics detector, exposing the same predict()
+    contract as VisualClassifier so fusion.extract_visual_ai_probability()
+    consumes either without special-casing.
+    """
+
+    def __init__(self, repo_id=COMMFOR_MODEL_384, device=None):
+        """
+        Args:
+            repo_id: HuggingFace repo of an official commfor checkpoint.
+            device:  torch.device, or None to auto-select.
+        """
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+
+        self.repo_id = repo_id
+        self.device = device or resolve_device()
+
+        with open(hf_hub_download(repo_id, "config.json")) as fh:
+            self.config = json.load(fh)
+        # config.json records the training device ("cuda"); ignore it.
+        self.config.pop("device", None)
+
+        self.input_size = self.config.get("input_size", 384)
+        self.model = _CommForViT(**self.config)
+        # strict: a silently-partial load would leave a randomly initialised
+        # head and produce plausible-looking noise.
+        self.model.load_state_dict(
+            load_file(hf_hub_download(repo_id, "model.safetensors")), strict=True
+        )
+        self.model.to(self.device).eval()
+
+        self.transform = _build_commfor_transform(self.input_size)
+
+    def ai_probabilities(self, images):
+        """
+        P(AI-generated) for a list of PIL images, as a list of floats.
+
+        Batched entry point for evaluation runs; predict() wraps it for the
+        single-image pipeline path.
+        """
+        batch = torch.stack([
+            self.transform(img if img.mode == "RGB" else img.convert("RGB"))
+            for img in images
+        ]).to(self.device)
+
+        with torch.no_grad():
+            logits = self.model(batch).squeeze(-1)
+            return torch.sigmoid(logits).float().cpu().tolist()
+
+    def predict(self, image):
+        """
+        Predicts whether an image is AI generated or Real.
+
+        Args:
+            image: A PIL Image object.
+
+        Returns:
+            A dictionary with prediction label, confidence, raw label, and all scores.
+        """
+        ai_prob = self.ai_probabilities([image])[0]
+        is_ai = ai_prob >= 0.5
+
+        return {
+            "prediction": "AI Generated" if is_ai else "Real",
+            "confidence": round(ai_prob if is_ai else 1.0 - ai_prob, 4),
+            "raw_label": "ai-generated" if is_ai else "real",
+            "all_scores": {
+                "Real": round(1.0 - ai_prob, 4),
+                "AI-generated": round(ai_prob, 4),
+            },
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Weight-delta storage (fine-tuned checkpoints are committed as int8 deltas)
+# --------------------------------------------------------------------------- #
 
 
 def save_weight_delta(

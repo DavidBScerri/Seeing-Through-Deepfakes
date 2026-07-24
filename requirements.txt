@@ -11,6 +11,9 @@ tqdm
 ipykernel
 ipywidgets
 transformers
+timm
+safetensors
+pyarrow
 accelerate>=1.1.0
 faiss-cpu
 matplotlib

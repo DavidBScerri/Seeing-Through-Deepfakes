@@ -1,0 +1,117 @@
+{
+  "threshold": 0.55,
+  "delta_base_model": "dima806/ai_vs_real_image_detection",
+  "delta_path": "src/visual_module/fine_tuned_model_delta/run_01_stage2A_ft_combined_weight_delta.pt",
+  "samples12": {
+    "metrics": {
+      "Work placement (fine-tuned ViT)": {
+        "n": 12,
+        "threshold": 0.55,
+        "auc": 0.3333333333333333,
+        "accuracy": 0.6666666666666666,
+        "precision": 1.0,
+        "recall": 0.3333333333333333,
+        "f1": 0.5,
+        "confusion_matrix": [
+          [
+            6,
+            0
+          ],
+          [
+            4,
+            2
+          ]
+        ]
+      },
+      "Community Forensics 384": {
+        "n": 12,
+        "threshold": 0.55,
+        "auc": 0.888888888888889,
+        "accuracy": 0.6666666666666666,
+        "precision": 1.0,
+        "recall": 0.3333333333333333,
+        "f1": 0.5,
+        "confusion_matrix": [
+          [
+            6,
+            0
+          ],
+          [
+            4,
+            2
+          ]
+        ]
+      }
+    },
+    "probs": {
+      "Work placement (fine-tuned ViT)": {
+        "ai+metadata-place-face.png": 0.8264,
+        "ai-metadata-place-face.png": 0.8264,
+        "deepfake+metadata+place-face.png": 0.0625,
+        "deepfake+metadata-place+face.png": 0.0668,
+        "deepfake-metadata+place-face.png": 0.0625,
+        "deepfake-metadata-place+face.png": 0.0668,
+        "real+metadata+place-face.jpg": 0.146,
+        "real+metadata-place+face.jpeg": 0.2917,
+        "real+metadata-place-face.jpeg": 0.1147,
+        "real-metadata+place-face.jpg": 0.2168,
+        "real-metadata-place+face.jpg": 0.3876,
+        "real-metadata-place-face.jpg": 0.1978
+      },
+      "Community Forensics 384": {
+        "ai+metadata-place-face.png": 0.0046,
+        "ai-metadata-place-face.png": 0.0046,
+        "deepfake+metadata+place-face.png": 0.2027,
+        "deepfake+metadata-place+face.png": 0.7108,
+        "deepfake-metadata+place-face.png": 0.2027,
+        "deepfake-metadata-place+face.png": 0.7108,
+        "real+metadata+place-face.jpg": 0.0071,
+        "real+metadata-place+face.jpeg": 0.0003,
+        "real+metadata-place-face.jpeg": 0.0,
+        "real-metadata+place-face.jpg": 0.0554,
+        "real-metadata-place+face.jpg": 0.0001,
+        "real-metadata-place-face.jpg": 0.0001
+      }
+    }
+  },
+  "combined_test": {
+    "Work placement (fine-tuned ViT)": {
+      "n": 3462,
+      "threshold": 0.55,
+      "auc": 0.921318032546156,
+      "accuracy": 0.841421143847487,
+      "precision": 0.8542291541691661,
+      "recall": 0.823121387283237,
+      "f1": 0.8383868118928466,
+      "confusion_matrix": [
+        [
+          1489,
+          243
+        ],
+        [
+          306,
+          1424
+        ]
+      ]
+    },
+    "Community Forensics 384": {
+      "n": 3462,
+      "threshold": 0.55,
+      "auc": 0.8217624050514624,
+      "accuracy": 0.7397458116695552,
+      "precision": 0.8594969644405898,
+      "recall": 0.5728323699421966,
+      "f1": 0.6874783211932015,
+      "confusion_matrix": [
+        [
+          1570,
+          162
+        ],
+        [
+          739,
+          991
+        ]
+      ]
+    }
+  }
+}
