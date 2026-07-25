@@ -16,6 +16,7 @@ python -m src.integration_pipeline.app                 # run the demo web UI (lo
 python src/metadata_module/metadata_extraction.py IMG  # metadata analysis of one image, JSON to stdout
 python src/deepfake_module/initialise_index.py         # (re)build FAISS landmark index — slow, downloads dataset
 python src/visual_module/build_combined_dataset.py     # (re)build training corpus — downloads many GB
+python -m src.visual_module.build_commfor_eval_index   # (re)scan CF eval shard index — committed, rarely needed
 ```
 
 There is no build, lint, or test command. Tests don't exist yet (GAPS.md #3 specifies the intended pytest layout under `tests/`). Training and evaluation run through notebooks: `visual_classifier_finetuning.ipynb` (edit the config cell, run), `*_eval.ipynb` per module, `integration_pipeline/bulk_evaluation.ipynb` for end-to-end runs over `data/sample_images/`.
@@ -41,6 +42,8 @@ There is no build, lint, or test command. Tests don't exist yet (GAPS.md #3 spec
 - Sample images encode ground truth in the filename: `{real|ai|deepfake}{±}metadata{±}place{±}face.ext`. `bulk_evaluation.ipynb` parses the prefix — keep the convention when adding samples.
 - Missing/stripped metadata must score **≈0.5 (uncertain)**, never low ("real"). `score_features()` starts at 0.5 by design.
 - The visual classifier's label strings differ per base model; `extract_visual_ai_probability()` in `fusion.py` normalises them — route any new prediction consumption through it.
+- **`combined_dataset` test is in-distribution for the run_01 delta** — `build_combined_dataset.py` shuffles all three sources together *before* the 80/10/10 split, so train and test share generators. Scores there measure corpus fit, not generalisation; the Community Forensics eval set (Test 3 in `visual_module_eval.ipynb`) is the external check.
+- The CF eval set is 206 GB over 413 shards, and **a shard is not one generator with its paired reals** — a generator spans many shards and any single shard is often all-real or all-AI. Select shards via `select_commfor_eval_shards()` off the committed index; evenly spaced sampling yields generators with one class and undefined AP. Shards range 4.7 MB–2.9 GB, so always keep a size cap.
 - `data/` is ~88 GB and gitignored; never `git add` anything under `data/visual/`. Everything under `**/outputs/models/`, `**/fine_tuned_model/` is gitignored too.
 
 ## Rules
