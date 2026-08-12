@@ -1096,7 +1096,7 @@
     <header class="main-header">
       <div>Active Pipeline</div>
       <div class="active-config-badge" id="active-badge">
-        Strategy: Weighted Average | Threshold: 0.50
+        Strategy: Weighted Average | Threshold: 0.55
       </div>
     </header>
 
@@ -1573,13 +1573,13 @@
         w_meta: '0.30',
         w_visual: '0.70',
         meta_accuracy: '0.70',
-        visual_accuracy: '0.83',
+        visual_accuracy: '0.9311',
         face_padding: '0.30',
-        wa_threshold: '0.50',
+        wa_threshold: '0.55',
         ct_meta_thresh: '0.70',
         ct_visual_thresh: '0.65',
         bayes_prior: '0.50',
-        bayes_threshold: '0.50',
+        bayes_threshold: '0.55',
         deepfake_threshold: '0.50'
       };
     }
@@ -1614,7 +1614,7 @@
         if (statusStep === 1) {
           updateProcessingStatus("Reading image metadata...", "Extracting EXIF tags and scan for binary signatures");
         } else if (statusStep === 3) {
-          updateProcessingStatus("Running Visual Classifier...", "Processing image pixels via fine-tuned ViT");
+          updateProcessingStatus("Running Visual Classifier...", "Processing image pixels via Community Forensics ViT");
         } else if (statusStep === 5) {
           updateProcessingStatus("Running Face Detection...", "Scanning face bounding boxes with YuNet");
         } else if (statusStep === 7) {

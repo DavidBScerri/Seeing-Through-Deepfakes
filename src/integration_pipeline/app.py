@@ -420,24 +420,23 @@ def stop_server():
 
 if __name__ == "__main__":
     print("Starting in Standalone mode. Initializing models...")
-    from src.visual_module.visual_classifier import VisualClassifier, get_delta_base_model
+    from src.visual_module.visual_classifier import CommunityForensicsClassifier, COMMFOR_MODEL_384
     from src.deepfake_module.deepfake_classifier import DeepfakeClassifier
 
-    # run_01_stage2A is the Stage-2 fine-tuned model reported in the work
-    # placement report (base: dima806/ai_vs_real_image_detection) and the one
-    # bulk_evaluation.ipynb evaluates. The run_02+ deltas were trained on the
-    # *other* dima806 base — the base is therefore always read from the delta
-    # checkpoint itself so the pairing cannot silently be wrong (GAPS.md #1).
-    visual_delta_path = PROJECT_ROOT / "src" / "visual_module" / "fine_tuned_model_delta" / "run_01_stage2A_ft_combined_weight_delta.pt"
+    # Canonical visual backbone (David, 2026-08-12): OwensLab/commfor-model-384,
+    # official Community Forensics weights (Park & Owens, arXiv:2411.04125),
+    # used out of the box with no fine-tuning delta. Chosen over the run_01
+    # fine-tuned ViT for generalisation to unseen generators — see
+    # run_07_visual_backend_comparison_eval_results.json: pooled AUC 0.994 vs
+    # 0.761 on the 21-generator external Community Forensics eval set (the
+    # fine-tuned model wins only in-distribution, AUC 0.921 vs 0.822, which is
+    # not the property that matters long-term). VISUAL_ACCURACY in config.py
+    # was updated to match (see that file's docstring).
     deepfake_index_path = PROJECT_ROOT / "src" / "deepfake_module" / "models" / "landmarks_index.faiss"
     deepfake_meta_path  = PROJECT_ROOT / "src" / "deepfake_module" / "models" / "landmarks_metadata.json"
 
-    base_model = get_delta_base_model(str(visual_delta_path)) or "dima806/ai_vs_real_image_detection"
-    print(f"Loading visual classifier (base: {base_model})...")
-    visual_model = VisualClassifier(
-        model_name_or_path=base_model,
-        delta_path=str(visual_delta_path),
-    )
+    print(f"Loading visual classifier ({COMMFOR_MODEL_384})...")
+    visual_model = CommunityForensicsClassifier(repo_id=COMMFOR_MODEL_384)
 
     print("Loading deepfake classifier...")
     deepfake_model = DeepfakeClassifier(
