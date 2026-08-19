@@ -2,6 +2,15 @@
 
 Each gap: what it is, where, why it matters, and a fix scoped to a single small task.
 
+> **Historical paths.** File locations named below (`src/metadata_module`,
+> `src/visual_module`, `src/integration_pipeline`, `src/deepfake_module`)
+> are the pre-reshuffle paths as of when each gap was written. The current
+> layout is `src/genai_detection/{metadata,visual}_module/`,
+> `src/genai_detection/integration_pipeline/`, and `src/deepfake_detection/`
+> — see [CLAUDE.md](CLAUDE.md) / [PROJECT.md](PROJECT.md) for the mapping.
+> The rest of this file preserves the old names verbatim so the audit
+> history and status notes stay legible.
+
 ---
 
 ## 1. The web app applies a fine-tuned delta to the WRONG base model — SEVERITY: CRITICAL (correctness)

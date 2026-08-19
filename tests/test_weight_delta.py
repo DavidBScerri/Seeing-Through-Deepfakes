@@ -1,5 +1,6 @@
 """
-Tests for the int8 weight-delta mechanism (src/visual_module/visual_classifier.py).
+Tests for the int8 weight-delta mechanism
+(src/genai_detection/visual_module/visual_classifier.py).
 
 The delta files are how fine-tuned models are reproduced exactly, so the
 round-trip must be faithful (within int8 quantisation error) and applying a
@@ -10,7 +11,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.visual_module.visual_classifier import get_delta_base_model, load_weight_delta
+from src.genai_detection.visual_module.visual_classifier import get_delta_base_model, load_weight_delta
 
 
 def _make_delta_checkpoint(base: nn.Module, fine_tuned: nn.Module, base_model_name: str):

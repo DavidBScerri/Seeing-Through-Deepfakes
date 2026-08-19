@@ -16,18 +16,27 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Bootstrap the project root so `python src/.../app.py` works as well as
+# `python -m src.genai_detection.integration_pipeline.app`. The canonical
+# PROJECT_ROOT helper lives in src/__init__.py; import it via a short
+# explicit walk so this file can run before `src` is importable.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.metadata_module import analyse_image, AnalysisResult
-from src.integration_pipeline import config
-from src.integration_pipeline.fusion import (
+from src import PROJECT_ROOT
+from src.genai_detection.metadata_module import analyse_image, AnalysisResult
+from src.genai_detection.integration_pipeline import config
+from src.genai_detection.integration_pipeline.fusion import (
     get_fusion_strategy,
     extract_visual_ai_probability,
     crop_face_region,
 )
-from src.deepfake_module.gradcam_face_analysis import compute_occlusion_saliency, _overlay_heatmap
+from src.deepfake_detection.gradcam_face_analysis import compute_occlusion_saliency, _overlay_heatmap
+
+# Frontend (index.html) lives outside src/ under web/ so the backend
+# package doesn't ship browser assets — see README "Project layout".
+_WEB_DIR = PROJECT_ROOT / "web"
 
 _active_server = None
 _server_thread = None
@@ -43,7 +52,7 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             
-            html_path = Path(__file__).parent / "index.html"
+            html_path = _WEB_DIR / "index.html"
             if html_path.exists():
                 self.wfile.write(html_path.read_bytes())
             else:
@@ -420,8 +429,8 @@ def stop_server():
 
 if __name__ == "__main__":
     print("Starting in Standalone mode. Initializing models...")
-    from src.visual_module.visual_classifier import CommunityForensicsClassifier, COMMFOR_MODEL_384
-    from src.deepfake_module.deepfake_classifier import DeepfakeClassifier
+    from src.genai_detection.visual_module.visual_classifier import CommunityForensicsClassifier, COMMFOR_MODEL_384
+    from src.deepfake_detection.deepfake_classifier import DeepfakeClassifier
 
     # Canonical visual backbone (David, 2026-08-12): OwensLab/commfor-model-384,
     # official Community Forensics weights (Park & Owens, arXiv:2411.04125),
@@ -432,8 +441,8 @@ if __name__ == "__main__":
     # fine-tuned model wins only in-distribution, AUC 0.921 vs 0.822, which is
     # not the property that matters long-term). VISUAL_ACCURACY in config.py
     # was updated to match (see that file's docstring).
-    deepfake_index_path = PROJECT_ROOT / "src" / "deepfake_module" / "models" / "landmarks_index.faiss"
-    deepfake_meta_path  = PROJECT_ROOT / "src" / "deepfake_module" / "models" / "landmarks_metadata.json"
+    deepfake_index_path = PROJECT_ROOT / "src" / "deepfake_detection" / "models" / "landmarks_index.faiss"
+    deepfake_meta_path  = PROJECT_ROOT / "src" / "deepfake_detection" / "models" / "landmarks_metadata.json"
 
     print(f"Loading visual classifier ({COMMFOR_MODEL_384})...")
     visual_model = CommunityForensicsClassifier(repo_id=COMMFOR_MODEL_384)

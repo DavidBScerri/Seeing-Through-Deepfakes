@@ -343,7 +343,7 @@ def ai_probabilities(classifier, images):
     if hasattr(classifier, "ai_probabilities"):
         return classifier.ai_probabilities(images)
 
-    from src.integration_pipeline.fusion import extract_visual_ai_probability
+    from src.genai_detection.integration_pipeline.fusion import extract_visual_ai_probability
 
     return [extract_visual_ai_probability(classifier.predict(img)) for img in images]
 

@@ -32,7 +32,7 @@ There are **no tests, no linter config, no CI, no packaging** (no `pyproject.tom
         ┌────────────────────┴────────────────────┐
         ▼                                         ▼
  Metadata & Provenance Module              Visual Classifier (ViT)
- src/metadata_module/                      src/visual_module/
+ src/genai_detection/metadata_module/      src/genai_detection/visual_module/
  exiftool → feature flags →               base model + int8 weight-delta
  heuristic score  P(AI)_m                  → P(AI)_v
         │                                         │
@@ -40,12 +40,12 @@ There are **no tests, no linter config, no CI, no packaging** (no `pyproject.tom
         │                                         │
         └──────────────┬──────────────────────────┘
                        ▼
-              Decision Fusion  (src/integration_pipeline/fusion.py)
+              Decision Fusion  (src/genai_detection/integration_pipeline/fusion.py)
               P(AI)_v* = max(P(AI)_v, P(AI)_vcf)
               weighted / conservative / bayesian strategy → P(AI), is_ai
                        │ is_ai == True  (proportionality gate)
                        ▼
-              Conditional Deepfake Module (src/deepfake_module/)
+              Conditional Deepfake Module (src/deepfake_detection/)
               YuNet face (P_f ≥ 0.75?)  +  DINOv2+FAISS landmark (P_lm ≥ 0.5?)
               is_deepfake = has_face OR has_place
                        │
@@ -56,13 +56,13 @@ There are **no tests, no linter config, no CI, no packaging** (no `pyproject.tom
 
 ### The four modules
 
-1. **`src/metadata_module/metadata_extraction.py`** — runs `exiftool -j -a -u -g1`, flattens the JSON to lowercase `key → value` strings, scans the raw file bytes for binary markers (`c2pa`, `openai`, `midjourney`, …), and derives boolean features (`has_make`, `has_c2pa`, `has_ai_claim`, `suspicious_only_software_tags`, …). `score_features()` starts at **0.50 (neutral)** and adds/subtracts per feature (+0.35 explicit AI claim, −0.20 rich camera metadata, clamp to [0.01, 0.99]). This encodes the core design rule: **absence of metadata is uncertainty, not authenticity** — platforms strip metadata routinely. `decide()` maps to `likely_ai_generated` / `likely_camera_origin` / `uncertain`. Pure heuristics, no ML, fully explainable by construction.
+1. **`src/genai_detection/metadata_module/metadata_extraction.py`** — runs `exiftool -j -a -u -g1`, flattens the JSON to lowercase `key → value` strings, scans the raw file bytes for binary markers (`c2pa`, `openai`, `midjourney`, …), and derives boolean features (`has_make`, `has_c2pa`, `has_ai_claim`, `suspicious_only_software_tags`, …). `score_features()` starts at **0.50 (neutral)** and adds/subtracts per feature (+0.35 explicit AI claim, −0.20 rich camera metadata, clamp to [0.01, 0.99]). This encodes the core design rule: **absence of metadata is uncertainty, not authenticity** — platforms strip metadata routinely. `decide()` maps to `likely_ai_generated` / `likely_camera_origin` / `uncertain`. Pure heuristics, no ML, fully explainable by construction.
 
-2. **`src/visual_module/`** — `VisualClassifier` wraps a HuggingFace ViT image classifier. Fine-tuned weights are stored as **int8-quantised weight deltas** (`save_weight_delta`/`load_weight_delta` in `visual_classifier.py`): only the diff vs. the base model is committed (~27–84 MB instead of ~330 MB), and it's applied in-place at load. `training.py` holds the Trainer helpers (layer freezing, experience replay, augmentation, early stopping); the actual training runs live in `visual_classifier_finetuning.ipynb` (a config-cell-driven "workbench"). `build_combined_dataset.py` assembles the training corpus from three HF sources (JulienLucas, NTIRE, DeepfakeJudge), balanced 50/50 real:AI, split 80/10/10 — **keep this methodology when retraining or results stop being comparable** to the report's Figures 2–3 (base model: acc 0.523, recall 0.064 → fine-tuned: acc 0.841, recall 0.846 on the combined test split).
+2. **`src/genai_detection/visual_module/`** — `VisualClassifier` wraps a HuggingFace ViT image classifier. Fine-tuned weights are stored as **int8-quantised weight deltas** (`save_weight_delta`/`load_weight_delta` in `visual_classifier.py`): only the diff vs. the base model is committed (~27–84 MB instead of ~330 MB), and it's applied in-place at load. `training.py` holds the Trainer helpers (layer freezing, experience replay, augmentation, early stopping); the actual training runs live in `visual_classifier_finetuning.ipynb` (a config-cell-driven "workbench"). `build_combined_dataset.py` assembles the training corpus from three HF sources (JulienLucas, NTIRE, DeepfakeJudge), balanced 50/50 real:AI, split 80/10/10 — **keep this methodology when retraining or results stop being comparable** to the report's Figures 2–3 (base model: acc 0.523, recall 0.064 → fine-tuned: acc 0.841, recall 0.846 on the combined test split).
 
-3. **`src/deepfake_module/`** — `DeepfakeClassifier` = YuNet face detector (auto-downloads the ONNX on first use) + `LandmarkIndex` (DINOv2 CLS embeddings searched against a FAISS index of Google Landmarks v2-mini, built by `initialise_index.py`). It does **not** re-decide real vs. AI; it adds semantic context (face-like? place-like?) to images already flagged. The two `gradcam_*_analysis.py` files are misnomers — they implement **occlusion-based saliency** (slide a mean-colour patch over the image, measure confidence drop), used for the report's explainability figures and the web UI heatmaps.
+3. **`src/deepfake_detection/`** — `DeepfakeClassifier` = YuNet face detector (auto-downloads the ONNX on first use) + `LandmarkIndex` (DINOv2 CLS embeddings searched against a FAISS index of Google Landmarks v2-mini, built by `initialise_index.py`). It does **not** re-decide real vs. AI; it adds semantic context (face-like? place-like?) to images already flagged. The two `gradcam_*_analysis.py` files are misnomers — they implement **occlusion-based saliency** (slide a mean-colour patch over the image, measure confidence drop), used for the report's explainability figures and the web UI heatmaps.
 
-4. **`src/integration_pipeline/`** — `fusion.py` defines three `FusionStrategy` classes: `WeightedAverageFusion` (the thesis formula: reliability-weighted average with separate importance weights `w` and accuracy scalars `a`, normalised), `ConservativeThresholdFusion` (AND-gate), `BayesianFusion` (independent-evidence Bayes). `app.py` is the demo server: stdlib HTTP server, hand-rolled multipart parsing, serves `index.html`, exposes one endpoint `POST /api/analyse`, and holds the **live configuration constants** (weights, thresholds, strategy choice) at the top of the file. `bulk_evaluation.ipynb` runs the whole pipeline over `data/sample_images/` and exports CSVs to `outputs/`.
+4. **`src/genai_detection/integration_pipeline/`** — `fusion.py` defines three `FusionStrategy` classes: `WeightedAverageFusion` (the thesis formula: reliability-weighted average with separate importance weights `w` and accuracy scalars `a`, normalised), `ConservativeThresholdFusion` (AND-gate), `BayesianFusion` (independent-evidence Bayes). `app.py` is the demo backend: stdlib HTTP server, hand-rolled multipart parsing, serves `web/index.html` (the frontend now lives outside `src/`), exposes one endpoint `POST /api/analyse`, and reads its live configuration constants (weights, thresholds, strategy choice) from `config.py`. `bulk_evaluation.ipynb` runs the whole pipeline over `data/sample_images/` and exports CSVs to `outputs/`.
 
 ### The exact fusion math (the load-bearing part)
 
@@ -91,18 +91,18 @@ From the work placement report §3.4 — do not approximate:
 
 ## Critical paths (ranked)
 
-1. **`src/integration_pipeline/fusion.py`** — the scientific contribution. Changing formulas/thresholds silently changes what counts as a deepfake and invalidates report figures. Highest care.
-2. **`src/metadata_module/metadata_extraction.py` `score_features()`/`decide()`** — the metadata evidence stream; same reasoning.
-3. **`src/visual_module/visual_classifier.py` delta save/load** — a wrong base-model pairing corrupts every downstream number (this bug currently exists in `app.py` — see GAPS.md #1).
+1. **`src/genai_detection/integration_pipeline/fusion.py`** — the scientific contribution. Changing formulas/thresholds silently changes what counts as a deepfake and invalidates report figures. Highest care.
+2. **`src/genai_detection/metadata_module/metadata_extraction.py` `score_features()`/`decide()`** — the metadata evidence stream; same reasoning.
+3. **`src/genai_detection/visual_module/visual_classifier.py` delta save/load** — a wrong base-model pairing corrupts every downstream number (this bug currently exists in `app.py` — see GAPS.md #1).
 4. **`app.py` configuration block (lines ~32–48)** — the *live* thresholds and weights for the demo. These currently disagree with the documented formula values.
-5. **`fine_tuned_model_delta/*.pt` and `src/deepfake_module/models/*`** — committed experiment artefacts; regenerating them exactly is expensive or impossible. Never delete or overwrite.
+5. **`fine_tuned_model_delta/*.pt` and `src/deepfake_detection/models/*`** — committed experiment artefacts; regenerating them exactly is expensive or impossible. Never delete or overwrite.
 6. Safe to change casually: `index.html` styling, saliency visualisation cosmetics, notebook display cells, print formatting.
 
 ## Surprises / things that will trip you up
 
 - **The canonical base model is `dima806/ai_vs_real_image_detection`** (David, 2026-07-19) — used by `visual_classifier.py`/`training.py` defaults, both pipeline entry points, and the run_01 deltas (`run_01_stage2A` is the report's Stage-2 model). The run_02–04 deltas were trained on the *other* repo (`ai_vs_human_generated_image_detection`) and only load on that base; `load_weight_delta` raises on mismatch and `get_delta_base_model` reads the recorded base.
 - **"gradcam" files contain no Grad-CAM** — occlusion saliency replaced Grad-CAM in `b4b11ef`; filenames were kept.
-- **The canonical fused decision threshold is 0.55** (David, 2026-07-19; centralised in `src/integration_pipeline/config.py`). The report's printed 0.5 predates this decision; the old 0.25 (app) / 0.45 (bulk notebook) were testing values from the mispaired-model era.
+- **The canonical fused decision threshold is 0.55** (David, 2026-07-19; centralised in `src/genai_detection/integration_pipeline/config.py`). The report's printed 0.5 predates this decision; the old 0.25 (app) / 0.45 (bulk notebook) were testing values from the mispaired-model era.
 - **`DeepfakeClassifier.predict()`'s internal visual gating is a no-op** as called from `app.py`: without a `visual_classifier` arg, `ai_score = threshold`, so the gate always passes. The real gate is fusion's `is_ai` in the caller.
 - **Sample-image filename convention** encodes ground truth: `{real|ai|deepfake}{+|-}metadata{+|-}place{+|-}face.ext` (`+` = has that property). `bulk_evaluation.ipynb` infers labels from the prefix.
 - **The repo lives inside iCloud Drive** with an 88 GB gitignored `data/` directory. Paths contain spaces (`Mobile Documents`, `com~apple~CloudDocs`) — always quote them in shell commands.

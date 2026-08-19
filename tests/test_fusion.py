@@ -1,5 +1,6 @@
 """
-Tests for the decision-fusion engine (src/integration_pipeline/fusion.py).
+Tests for the decision-fusion engine
+(src/genai_detection/integration_pipeline/fusion.py).
 
 The WeightedAverageFusion expectations are taken from the work placement
 report, Annex II (4): w_m=0.3, w_v=0.7, a_m=0.70, a_v=0.84. If these tests
@@ -9,7 +10,7 @@ test update.
 
 import pytest
 
-from src.integration_pipeline.fusion import (
+from src.genai_detection.integration_pipeline.fusion import (
     WeightedAverageFusion,
     ConservativeThresholdFusion,
     BayesianFusion,

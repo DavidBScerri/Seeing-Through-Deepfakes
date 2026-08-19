@@ -9,7 +9,7 @@ minutes total, no image bytes fetched — and caches the result as JSON.
 The index is committed, so this normally never needs re-running; do so only if
 the upstream dataset changes.
 
-    python -m src.visual_module.build_commfor_eval_index
+    python -m src.genai_detection.visual_module.build_commfor_eval_index
 """
 
 import argparse
@@ -21,7 +21,7 @@ import os
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, HfFileSystem
 
-from src.visual_module.evaluation import (
+from src.genai_detection.visual_module.evaluation import (
     COMMFOR_EVAL_INDEX_PATH,
     COMMFOR_EVAL_REPO,
     COMMFOR_EVAL_TOTAL_SHARDS,

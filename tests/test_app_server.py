@@ -1,6 +1,7 @@
 """
-Tests for the web-app request plumbing (src/integration_pipeline/app.py)
-and the YuNet model download/verification (src/deepfake_module/deepfake_classifier.py).
+Tests for the web-app request plumbing
+(src/genai_detection/integration_pipeline/app.py) and the YuNet model
+download/verification (src/deepfake_detection/deepfake_classifier.py).
 
 No HTTP server or model is started — these exercise the pure helpers.
 """
@@ -11,8 +12,8 @@ import urllib.request
 
 import pytest
 
-from src.integration_pipeline.app import parse_multipart_form, _temp_suffix_for
-import src.deepfake_module.deepfake_classifier as dc
+from src.genai_detection.integration_pipeline.app import parse_multipart_form, _temp_suffix_for
+import src.deepfake_detection.deepfake_classifier as dc
 
 
 def _multipart_body(boundary, file_bytes, filename='photo.png', params=None):

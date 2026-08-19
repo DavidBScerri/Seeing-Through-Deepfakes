@@ -1,5 +1,6 @@
 """
-Tests for the metadata evidence stream (src/metadata_module/metadata_extraction.py).
+Tests for the metadata evidence stream
+(src/genai_detection/metadata_module/metadata_extraction.py).
 
 Covers the design rule that missing metadata scores ≈0.5 (uncertain, never
 "real"), the report Annex II (1) score expectations, and regression cases
@@ -8,7 +9,7 @@ for the substring false positives fixed per GAPS.md #7.
 
 import pytest
 
-from src.metadata_module.metadata_extraction import (
+from src.genai_detection.metadata_module.metadata_extraction import (
     FeatureSet,
     build_features,
     decide,

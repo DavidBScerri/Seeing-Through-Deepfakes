@@ -16,28 +16,46 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# HuggingFace / model artefacts
-**/fine_tuned_model/
-**/fine_tuned_model/*
-!**/fine_tuned_model_delta/
-!**/fine_tuned_model_delta/**
-
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
 
-# Training outputs / checkpoints
-**/outputs/models/
+# ─── Model artefacts ────────────────────────────────────────────────────────
+# The visual classifier's full HF Trainer checkpoints (~330 MB) live under
+# `src/genai_detection/visual_module/fine_tuned_model/` when the notebooks
+# save one. Only the int8 weight deltas in `fine_tuned_model_delta/` get
+# committed (~27–84 MB) — the re-include below protects them.
+**/fine_tuned_model/
+**/fine_tuned_model/*
+**/fine_tuned_model_delta/
+!**/fine_tuned_model_delta/**
+
+# HF Trainer sometimes writes to `outputs/models/` on top of the delta
+# save, and per-run checkpoints/wandb runs are always regenerable.
+**/outputs/
+**/models/
 **/checkpoints/
 **/finetuned_model/
 wandb/
+.cache/
 
-# Data / cache
+# ─── Data — ~88 GB, only sample_images is committed ─────────────────────────
+# Blanket-ignore data/ and whitelist the tiny sample set used by
+# bulk_evaluation.ipynb so any new subdir (e.g. data/watermark/ from the
+# watermark slice, or new data/visual/* generator dumps) stays out of git
+# by default instead of relying on remembering to add a per-dir rule.
+data/*
+!data/sample_images/
+!data/sample_images/**
+
+# Legacy per-subdir rules kept as belt-and-braces so a mistakenly
+# whitelisted parent doesn't drag these regenerable caches back in.
 **/data/visual/temp_downloads/
 **/data/visual/combined_dataset/
 **/data/visual/ntire/
 **/data/visual/deepfakejudge/
 **/data/visual/julienlucas/
-.cache/
+
+# Tool caches
 graphify-out/
