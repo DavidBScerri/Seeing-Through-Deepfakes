@@ -7,7 +7,7 @@
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=Outfit:wght@400;500;600;700;800&amp;family=Fira+Code:wght@400;500&amp;display=swap" rel="stylesheet">
   
   <style>
     :root {
@@ -78,7 +78,8 @@
       letter-spacing: -0.02em;
       background: linear-gradient(135deg, #a5b4fc, #6366f1);
       -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      color: transparent;
       margin-bottom: 4px;
     }
 
@@ -136,6 +137,95 @@
       margin-bottom: 16px;
     }
 
+    .text-align-right {
+      text-align: right;
+    }
+
+    .df-landmark-matches-section {
+      margin-top: 16px;
+    }
+
+    .df-landmark-matches-title {
+      font-weight: 600;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .df-not-run-message {
+      text-align: center;
+      padding: 12px 0;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .limitation-note {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      text-align: center;
+      margin-top: 16px;
+      margin-bottom: 24px;
+      padding: 0 16px;
+    }
+
+    .visual-whole-score {
+      margin-bottom: 16px;
+    }
+
+    .visual-score-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .visual-verdict-row {
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .visual-verdict-value {
+      font-weight: 600;
+    }
+
+    .nested-face-prob-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+
+    .nested-face-verdict-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+
+    .nested-face-verdict {
+      font-weight: 600;
+    }
+
+    .visual-face-crop-title {
+      font-weight: 600;
+      font-size: 12px;
+      margin: 16px 0 8px;
+    }
+      .vis-scores-probability {
+        text-align: right;
+      }
+
+    .vis-scores-title {
+      font-weight: 600;
+      font-size: 12px;
+      margin-top: 16px;
+      margin-bottom: 6px;
+    }
+
+    .probability-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
     .control-label {
       display: flex;
       justify-content: space-between;
@@ -170,6 +260,7 @@
     input[type="range"].slider-control {
       width: 100%;
       -webkit-appearance: none;
+      appearance: none;
       height: 4px;
       border-radius: 2px;
       background: rgba(255, 255, 255, 0.1);
@@ -234,6 +325,12 @@
       text-overflow: ellipsis;
     }
 
+    .history-empty-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
     /* --- Main Container --- */
     .main-container {
       flex: 1;
@@ -253,6 +350,7 @@
       font-size: 13px;
       color: var(--text-secondary);
       background-color: rgba(15, 23, 42, 0.8);
+      -webkit-backdrop-filter: blur(12px);
       backdrop-filter: blur(12px);
       z-index: 5;
     }
@@ -346,6 +444,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      -webkit-backdrop-filter: blur(8px);
       backdrop-filter: blur(8px);
       box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
     }
@@ -368,6 +467,12 @@
       color: var(--text-secondary);
       transition: all var(--transition-speed);
     }
+
+    .drop-icon {
+      width: 24px;
+      height: 24px;
+    }
+
     .drop-zone:hover .drop-icon-wrapper {
       color: var(--text-primary);
       background-color: rgba(99, 102, 241, 0.1);
@@ -700,6 +805,7 @@
       align-items: center;
       justify-content: space-between;
       cursor: pointer;
+      -webkit-user-select: none;
       user-select: none;
     }
 
@@ -909,6 +1015,10 @@
       justify-content: center;
       gap: 6px;
     }
+    .notice-title .icon {
+      width: 14px;
+      height: 14px;
+    }
     .notice-text {
       font-size: 12px;
       color: var(--text-secondary);
@@ -923,6 +1033,7 @@
       font-size: 12.5px;
       color: var(--text-primary);
       cursor: pointer;
+      -webkit-user-select: none;
       user-select: none;
     }
     .checkbox-container input {
@@ -942,6 +1053,13 @@
     }
 
     /* GradCAM Heatmap Display */
+    .gradcam-image-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+
     .gradcam-section {
       margin-top: 20px;
       padding-top: 16px;
@@ -1084,7 +1202,7 @@
       <div class="history-list" id="history-list">
         <!-- Dynamic history items go here -->
         <div class="history-item empty" id="history-empty">
-          <span style="font-size:11px; color:var(--text-muted); font-style:italic;">No files analysed yet in this session.</span>
+          <span class="history-empty-text">No files analysed yet in this session.</span>
         </div>
       </div>
     </div>
@@ -1117,7 +1235,7 @@
           <!-- AI Analysis Notice Card -->
           <div class="notice-card" id="notice-card">
             <div class="notice-title">
-              <svg class="icon" style="width:14px; height:14px;"><use href="#icon-alert-triangle"/></svg>
+              <svg class="icon"><use href="#icon-alert-triangle"/></svg>
               AI Analysis Notice
             </div>
             <div class="notice-text">
@@ -1133,7 +1251,7 @@
           <div class="drop-zone" id="drop-zone">
             <input type="file" id="file-input" class="hidden" accept=".png,.jpg,.jpeg,.webp">
             <div class="drop-icon-wrapper">
-              <svg class="icon" style="width:24px; height:24px;"><use href="#icon-file-up"/></svg>
+              <svg class="icon drop-icon"><use href="#icon-file-up"/></svg>
             </div>
             <div class="drop-text-primary">Drag and drop your photo here</div>
             <div class="drop-text-secondary">or click to browse from files</div>
@@ -1165,7 +1283,7 @@
           <!-- User message (Image preview) -->
           <div class="chat-bubble user">
             <div class="chat-bubble-content">
-              <img class="user-image-preview" id="res-user-img" src="" alt="Uploaded photo">
+              <img class="user-image-preview" id="res-user-img" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Uploaded photo">
               <div class="user-image-name" id="res-user-filename">image_name.jpg</div>
             </div>
           </div>
@@ -1221,7 +1339,7 @@
                   </div>
                   <div class="accordion-body">
                     <div class="accordion-content">
-                      <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+                      <div class="probability-row">
                         <span>Metadata AI Probability:</span>
                         <strong class="text-warning" id="meta-prob-val">0.0%</strong>
                       </div>
@@ -1231,7 +1349,7 @@
                         <!-- Badges dynamically added -->
                       </div>
 
-                      <div style="font-weight:600; font-size:12px; margin-top:16px;">Decision Rationale:</div>
+                      <div class="accordion-section-label">Decision Rationale:</div>
                       <ul class="rationale-list" id="meta-rationale">
                         <!-- Items dynamically added -->
                       </ul>
@@ -1249,42 +1367,42 @@
                   </div>
                   <div class="accordion-body">
                     <div class="accordion-content">
-                      <div style="margin-bottom: 16px;">
-                        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                      <div class="visual-whole-score">
+                        <div class="visual-score-row">
                           <span>Whole Image Score (P-AI):</span>
                           <strong id="vis-whole-prob-val">0.0%</strong>
                         </div>
-                        <div style="display:flex; justify-content:space-between;">
+                        <div class="visual-verdict-row">
                           <span>Prediction Verdict:</span>
-                          <span id="vis-whole-verdict-val" style="font-weight:600;">Real</span>
+                          <span id="vis-whole-verdict-val" class="visual-verdict-value">Real</span>
                         </div>
                       </div>
 
                       <!-- Cropped face panel (conditional) -->
                       <div id="vis-face-crop-card" class="hidden">
-                        <div style="font-weight:600; font-size:12px; margin-bottom:8px; margin-top:16px;">👤 Cropped Face Region Analysis:</div>
+                        <div class="visual-face-crop-title">👤 Cropped Face Region Analysis:</div>
                         <div class="nested-face-card">
-                          <img class="nested-face-img" id="vis-face-crop-img" src="" alt="Cropped face">
+                          <img class="nested-face-img" id="vis-face-crop-img" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Cropped face">
                           <div class="nested-face-details">
-                            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                            <div class="nested-face-prob-row">
                               <span>Face Region AI Probability:</span>
                               <strong id="vis-face-prob-val">0.0%</strong>
                             </div>
-                            <div style="display:flex; justify-content:space-between; font-size:12px;">
+                            <div class="nested-face-verdict-row">
                               <span>Face Verdict:</span>
-                              <span id="vis-face-verdict-val" style="font-weight:600;">Real</span>
+                              <span id="vis-face-verdict-val" class="nested-face-verdict">Real</span>
                             </div>
                           </div>
                         </div>
                       </div>
 
                       <!-- Scores Breakdown Table -->
-                      <div style="font-weight:600; font-size:12px; margin-top:16px; margin-bottom:6px;">ViT Outputs (Whole Image):</div>
+                      <div class="vis-scores-title">ViT Outputs (Whole Image):</div>
                       <table class="info-table" id="vis-scores-table">
                         <thead>
                           <tr>
                             <th>Class Label</th>
-                            <th style="text-align:right;">Probability</th>
+                              <th class="vis-scores-probability">Probability</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1297,7 +1415,7 @@
                         <div class="gradcam-section-title">🔥 GradCAM Attention Heatmap</div>
                         <div class="gradcam-container">
                           <div class="gradcam-image-wrapper">
-                            <img id="gradcam-whole-img" src="" alt="GradCAM heatmap overlay">
+                            <img id="gradcam-whole-img" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="GradCAM heatmap overlay">
                           </div>
                           <div class="gradcam-legend">
                             <div>
@@ -1320,15 +1438,15 @@
                         <div class="gradcam-container">
                           <div class="gradcam-pair">
                             <div>
-                              <div style="font-size:11px; color:var(--text-secondary); margin-bottom:6px; font-weight:500;">Cropped Face</div>
+                              <div class="gradcam-image-label">Cropped Face</div>
                               <div class="gradcam-image-wrapper">
-                                <img id="gradcam-face-original-img" src="" alt="Cropped face">
+                                <img id="gradcam-face-original-img" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Cropped face">
                               </div>
                             </div>
                             <div>
-                              <div style="font-size:11px; color:var(--text-secondary); margin-bottom:6px; font-weight:500;">GradCAM Overlay</div>
+                              <div class="gradcam-image-label">GradCAM Overlay</div>
                               <div class="gradcam-image-wrapper">
-                                <img id="gradcam-face-heatmap-img" src="" alt="Face GradCAM heatmap">
+                                <img id="gradcam-face-heatmap-img" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" alt="Face GradCAM heatmap">
                               </div>
                             </div>
                           </div>
@@ -1352,7 +1470,7 @@
                   <div class="accordion-body">
                     <div class="accordion-content">
                       <div id="df-not-run-msg" class="hidden">
-                        <div style="text-align:center; padding:12px 0; color:var(--text-muted); font-style:italic;">
+                        <div class="df-not-run-message">
                           Deepfake Module was not executed because the decision engine classified this image as Real.
                         </div>
                       </div>
@@ -1363,7 +1481,7 @@
                             <tr>
                               <th>Classifier Sub-Module</th>
                               <th>Output Result</th>
-                              <th style="text-align:right;">Confidence</th>
+                              <th class="text-align-right">Confidence</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1371,6 +1489,7 @@
                               <td>YuNet Face Detection</td>
                               <td id="df-val-face">No Face Detected</td>
                               <td class="val" id="df-conf-face">-</td>
+                            </tr>
                             <tr>
                               <td>DINOv2 Landmark Search</td>
                               <td id="df-val-landmark">None matched</td>
@@ -1380,14 +1499,14 @@
                         </table>
 
                         <!-- Landmark detail dropdown -->
-                        <div id="df-landmark-matches-section" style="margin-top: 16px;" class="hidden">
-                          <div style="font-weight:600; font-size:12px; margin-bottom:8px;">Retrieval Matches (FAISS Index):</div>
+                        <div id="df-landmark-matches-section" class="df-landmark-matches-section hidden">
+                          <div class="df-landmark-matches-title">Retrieval Matches (FAISS Index):</div>
                           <table class="info-table" id="df-landmark-matches-table">
                             <thead>
                               <tr>
                                 <th>Landmark / Identity</th>
-                                <th style="text-align:right;">Matches</th>
-                                <th style="text-align:right;">Avg Similarity</th>
+                                <th class="text-align-right">Matches</th>
+                                <th class="text-align-right;">Avg Similarity</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1402,7 +1521,7 @@
               </div>
 
               <!-- Limitation Note -->
-              <div class="limitation-note" style="font-size: 11px; color: var(--text-muted); line-height: 1.5; text-align: center; margin-top: 16px; margin-bottom: 24px; padding: 0 16px;">
+              <div class="limitation-note">
                 ⚠️ <strong>Limitation Note:</strong> This classification is based on probabilistic AI models and metadata heuristics. It should be used for informational purposes only and does not constitute definitive proof of authenticity or manipulation.
               </div>
 
