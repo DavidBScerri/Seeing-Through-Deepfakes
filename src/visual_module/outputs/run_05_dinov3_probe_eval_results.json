@@ -1,8 +1,0 @@
-{
-  "backbone": "dinov3-vitb16-pretrain-lvd1689m",
-  "val_accuracy": 0.8627960681915283,
-  "test_accuracy": 0.8630849220103987,
-  "test_auc": 0.9333754956013296,
-  "n_train": 27690,
-  "n_test": 3462
-}
