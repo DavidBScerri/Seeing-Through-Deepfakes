@@ -980,6 +980,10 @@
       display: none !important;
     }
 
+    .prov-signer-pill-hidden {
+      display: none;
+    }
+
     .text-success { color: var(--color-real); }
     .text-warning { color: var(--color-ai); }
     .text-danger { color: var(--color-df); }
@@ -1426,12 +1430,12 @@
                           <span class="prov-title">🛡️ C2PA Provenance</span>
                           <span class="prov-pill" id="prov-status-pill">…</span>
                           <span class="prov-pill" id="prov-origin-pill">…</span>
-                          <span class="prov-pill" id="prov-signer-pill" style="display:none">…</span>
+                          <span class="prov-pill prov-signer-pill-hidden" id="prov-signer-pill">…</span>
                         </div>
                         <p class="prov-rationale" id="prov-rationale">
                           Awaiting analysis.
                         </p>
-                        <dl class="prov-details" id="prov-details" style="display:none">
+                        <dl class="prov-details hidden" id="prov-details">
                           <!-- populated dynamically -->
                         </dl>
                         <p class="prov-footnote">
@@ -2114,9 +2118,9 @@
         statusPill.className = 'prov-pill unavailable';
         statusPill.textContent = 'Provenance not reported';
         originPill.style.display = 'none';
-        signerPill.style.display = 'none';
+        signerPill.classList.add('prov-signer-pill-hidden');
         rationaleEl.textContent = 'This backend build did not return a provenance section.';
-        detailsEl.style.display = 'none';
+        detailsEl.classList.add('hidden');
         detailsEl.innerHTML = '';
         return;
       }
@@ -2158,15 +2162,15 @@
 
       // Signer trust pill — only when we know.
       if (prov.signer_trusted === true) {
-        signerPill.style.display = '';
+        signerPill.classList.remove('prov-signer-pill-hidden');
         signerPill.className = 'prov-pill valid';
         signerPill.textContent = 'Signer trusted';
       } else if (prov.signer_trusted === false) {
-        signerPill.style.display = '';
+        signerPill.classList.remove('prov-signer-pill-hidden');
         signerPill.className = 'prov-pill untrusted';
         signerPill.textContent = 'Signer not trusted';
       } else {
-        signerPill.style.display = 'none';
+        signerPill.classList.add('prov-signer-pill-hidden');
       }
 
       rationaleEl.textContent = prov.rationale || '';
@@ -2192,7 +2196,7 @@
       if (prov.validation_errors && prov.validation_errors.length > 0) {
         addRow('Validation errors', prov.validation_errors);
       }
-      detailsEl.style.display = detailsEl.childElementCount > 0 ? '' : 'none';
+      detailsEl.classList.toggle('hidden', detailsEl.childElementCount === 0);
     }
 
     // --- History functions ---
