@@ -322,12 +322,38 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
         "has_lens_model": meta_features.has_lens_model,
         "has_makernote": meta_features.has_makernote,
         "has_gps": meta_features.has_gps,
-        "has_c2pa": meta_features.has_c2pa,
+        # Raw C2PA marker only — cryptographic validation lives on
+        # `provenance` below. The old `has_c2pa` alias is kept so
+        # older frontend builds keep rendering while they migrate.
+        "has_c2pa_marker": meta_features.has_c2pa_marker,
+        "has_c2pa": meta_features.has_c2pa_marker,
         "has_ai_claim": meta_features.has_ai_claim,
         "has_camera_claim": meta_features.has_camera_claim,
         "has_edit_claim": meta_features.has_edit_claim,
+        "unverified_ai_provider_hints": meta_features.unverified_ai_provider_hints,
         "suspicious_only_software_tags": meta_features.suspicious_only_software_tags,
         "suspicious_perfect_timestamp": meta_features.suspicious_perfect_timestamp,
+    }
+
+    # Provenance is a SEPARATE evidence object — the fusion formula in
+    # this task is intentionally unchanged, so this block reports the
+    # C2PA validator's findings without folding them into P(AI)_m.
+    provenance = meta_result.provenance
+    provenance_dict = {
+        "status": provenance.status.value,
+        "manifest_found": provenance.manifest_found,
+        "validation_passed": provenance.validation_passed,
+        "signer_trusted": provenance.signer_trusted,
+        "validation_state": provenance.validation_state,
+        "validation_errors": provenance.validation_errors,
+        "origin_claim": provenance.origin_claim.value,
+        "has_ai_generation_assertion": provenance.has_ai_generation_assertion,
+        "has_ai_manipulation_assertion": provenance.has_ai_manipulation_assertion,
+        "claim_generator": provenance.claim_generator,
+        "software_agents": provenance.software_agents,
+        "actions": provenance.actions,
+        "digital_source_types": provenance.digital_source_types,
+        "rationale": provenance.rationale,
     }
 
     return {
@@ -345,6 +371,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             "rationale": meta_result.rationale,
             "features": meta_features_dict,
         },
+        "provenance": provenance_dict,
         "visual": {
             "probability": visual_ai_prob,
             "prediction": visual_result["prediction"],

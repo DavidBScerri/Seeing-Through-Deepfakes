@@ -124,6 +124,76 @@ class TestBuildFeaturesFalsePositives:
         assert "ai generated" in hits
 
 
+class TestC2paMarkerIsNotAnAiClaim:
+    """
+    Semantic correction from the provenance-validation task:
+    ``c2pa``, ``claim_generator``, ``created_software_agent`` and
+    ``content credentials`` identify provenance plumbing — the manifest
+    system that recorded assertions about the file. They are NOT
+    themselves proof that the image was AI-generated. A camera-signed
+    image and an AI image both carry these strings.
+    """
+
+    def test_c2pa_marker_alone_does_not_set_ai_claim(self):
+        flat = flatten_metadata({
+            "C2PA": {"Manifest": {"claim_generator": "Adobe_Photoshop/25.0"}},
+        })
+        features = build_features(flat, binary_hits=[])
+        assert features.has_c2pa_marker is True
+        assert features.has_ai_claim is False, (
+            "A C2PA marker is not itself an AI-generation claim."
+        )
+
+    def test_claim_generator_alone_does_not_set_ai_claim(self):
+        flat = flatten_metadata({"XMP": {"claim_generator": "Some Camera 1.0"}})
+        features = build_features(flat, binary_hits=[])
+        assert features.has_ai_claim is False
+
+    def test_created_software_agent_alone_does_not_set_ai_claim(self):
+        flat = flatten_metadata({
+            "XMP": {"created_software_agent": "Adobe_Photoshop/25.0"},
+        })
+        features = build_features(flat, binary_hits=[])
+        assert features.has_ai_claim is False
+
+    def test_content_credentials_string_alone_does_not_set_ai_claim(self):
+        flat = flatten_metadata({"XMP": {"Description": "Content Credentials attached"}})
+        features = build_features(flat, binary_hits=[])
+        assert features.has_ai_claim is False
+
+    def test_c2pa_marker_adds_zero_to_score(self):
+        # Raw marker present, no AI claim: score must not creep upward.
+        with_marker = FeatureSet(has_c2pa_marker=True)
+        without = FeatureSet(has_c2pa_marker=False)
+        s_with, _ = score_features(with_marker)
+        s_without, _ = score_features(without)
+        assert s_with == pytest.approx(s_without)
+
+    def test_c2pa_marker_still_appears_in_rationale(self):
+        # Descriptive-only rationale keeps users informed without
+        # nudging the probability.
+        features = FeatureSet(has_c2pa_marker=True)
+        _, rationale = score_features(features)
+        assert any("c2pa" in r.lower() or "content-credentials" in r.lower() for r in rationale)
+
+    def test_binary_marker_only_provenance_hits_do_not_set_ai_claim(self):
+        # Binary scan finds `c2pa` bytes (as happens in random compressed
+        # image data — GAPS.md #7). That is not an AI claim.
+        flat = flatten_metadata({})
+        features = build_features(flat, binary_hits=["c2pa", "claim_generator"])
+        assert features.has_ai_claim is False
+        assert features.unverified_ai_provider_hints == []
+
+    def test_provider_keyword_is_flagged_as_unverified(self):
+        # Provider hits still contribute to `has_ai_claim` (the report's
+        # existing behaviour), but must be surfaced as unverified so
+        # consumers do not treat them as validated claims.
+        flat = flatten_metadata({"XMP": {"Software": "Midjourney"}})
+        features = build_features(flat, binary_hits=[])
+        assert features.has_ai_claim is True
+        assert "midjourney" in features.unverified_ai_provider_hints
+
+
 class TestFlattenMetadata:
     def test_nested_dicts_and_lists_flatten_lowercased(self):
         flat = flatten_metadata({"A": {"B": "Value"}, "C": ["x", "y"]})

@@ -984,6 +984,77 @@
     .text-warning { color: var(--color-ai); }
     .text-danger { color: var(--color-df); }
 
+    /* Provenance panel (C2PA validation) — a distinct evidence block
+       inside the metadata accordion, styled to stand apart from the
+       heuristic feature badges so users don't confuse "the string
+       c2pa appeared in EXIF" with "the manifest cryptographically
+       validates". */
+    .prov-panel {
+      background-color: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-top: 8px;
+      margin-bottom: 16px;
+    }
+    .prov-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .prov-title {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .prov-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid var(--border-color);
+      background-color: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
+    }
+    .prov-pill.valid       { color: #34d399; border-color: rgba(16, 185, 129, 0.4); background-color: rgba(16, 185, 129, 0.08); }
+    .prov-pill.invalid     { color: #f87171; border-color: rgba(239, 68, 68, 0.4);  background-color: rgba(239, 68, 68, 0.08); }
+    .prov-pill.untrusted   { color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); background-color: rgba(245, 158, 11, 0.08); }
+    .prov-pill.absent      { color: var(--text-muted); }
+    .prov-pill.unavailable { color: #a78bfa; border-color: rgba(139, 92, 246, 0.4); background-color: rgba(139, 92, 246, 0.08); }
+    .prov-pill.error       { color: #f87171; }
+    .prov-pill.origin-ai   { color: var(--color-ai); border-color: rgba(245, 158, 11, 0.4); background-color: rgba(245, 158, 11, 0.08); }
+    .prov-pill.origin-cam  { color: #34d399; border-color: rgba(16, 185, 129, 0.4); background-color: rgba(16, 185, 129, 0.08); }
+    .prov-pill.origin-none { color: var(--text-muted); }
+    .prov-rationale {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin: 6px 0 8px;
+    }
+    .prov-details {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 4px 12px;
+      margin-top: 8px;
+    }
+    .prov-details dt { font-weight: 600; color: var(--text-muted); }
+    .prov-details dd { margin: 0; font-family: 'Fira Code', monospace; word-break: break-word; }
+    .prov-footnote {
+      font-size: 10.5px;
+      color: var(--text-muted);
+      opacity: 0.8;
+      margin-top: 6px;
+      font-style: italic;
+    }
+
     /* Icons */
     .icon {
       width: 16px;
@@ -1343,7 +1414,32 @@
                         <span>Metadata AI Probability:</span>
                         <strong class="text-warning" id="meta-prob-val">0.0%</strong>
                       </div>
-                      
+
+                      <!-- C2PA provenance panel — separate evidence
+                           object from the heuristic metadata flags
+                           below. A raw C2PA marker in EXIF is NOT the
+                           same thing as a cryptographically valid
+                           manifest, and neither is a substitute for
+                           the visual classifier's opinion. -->
+                      <div class="prov-panel" id="prov-panel">
+                        <div class="prov-panel-header">
+                          <span class="prov-title">🛡️ C2PA Provenance</span>
+                          <span class="prov-pill" id="prov-status-pill">…</span>
+                          <span class="prov-pill" id="prov-origin-pill">…</span>
+                          <span class="prov-pill" id="prov-signer-pill" style="display:none">…</span>
+                        </div>
+                        <p class="prov-rationale" id="prov-rationale">
+                          Awaiting analysis.
+                        </p>
+                        <dl class="prov-details" id="prov-details" style="display:none">
+                          <!-- populated dynamically -->
+                        </dl>
+                        <p class="prov-footnote">
+                          Even a valid manifest only proves the signer's assertion — not that the image is (or is not) truly AI-generated.
+                        </p>
+                      </div>
+
+                      <div class="accordion-section-label">Heuristic EXIF/binary indicators (unverified):</div>
                       <!-- Flags -->
                       <div class="badge-grid" id="meta-badges">
                         <!-- Badges dynamically added -->
@@ -1842,9 +1938,13 @@
       const badgeGrid = document.getElementById('meta-badges');
       badgeGrid.innerHTML = ''; // reset
       
+      // Label wording deliberately calls these out as unverified
+      // heuristics. Cryptographic C2PA validation is a separate panel
+      // (renderProvenance below) — a "C2PA marker" here means only that
+      // the string appeared in the file, not that it validates.
       const featureLabels = {
-        has_c2pa: "C2PA Provenance",
-        has_ai_claim: "AI Claim in EXIF",
+        has_c2pa_marker: "C2PA marker (raw indicator)",
+        has_ai_claim: "AI keyword/provider in EXIF (unverified)",
         has_make: "Camera Make",
         has_model: "Camera Model",
         has_lens_model: "Lens Information",
@@ -1854,12 +1954,19 @@
       };
 
       for (const [key, label] of Object.entries(featureLabels)) {
-        const val = meta.features[key];
+        // Support the legacy `has_c2pa` name so older backends keep
+        // rendering while the frontend expects the new field.
+        let val = meta.features[key];
+        if (val === undefined && key === "has_c2pa_marker") {
+          val = meta.features.has_c2pa;
+        }
         const badge = document.createElement('div');
         badge.className = 'feature-badge ' + (val ? 'yes' : 'no');
         badge.innerHTML = `<span>${val ? '✓' : '✗'}</span> ${label}`;
         badgeGrid.appendChild(badge);
       }
+
+      renderProvenance(data.provenance);
 
       // Metadata rationale
       const rationaleList = document.getElementById('meta-rationale');
@@ -1984,6 +2091,108 @@
           behavior: 'smooth'
         });
       }, 200);
+    }
+
+    // --- C2PA provenance panel ---
+    // Renders the `provenance` block returned by /api/analyse. Kept
+    // deliberately separate from the heuristic feature badges so the
+    // user sees the difference between "the string c2pa appeared" and
+    // "the manifest cryptographically validates". Absence of a
+    // manifest and validator-unavailable are never mapped to a
+    // "Likely Real" rationale — that would break the design rule
+    // documented in metadata_module/models.py.
+    function renderProvenance(prov) {
+      const panel = document.getElementById('prov-panel');
+      const statusPill = document.getElementById('prov-status-pill');
+      const originPill = document.getElementById('prov-origin-pill');
+      const signerPill = document.getElementById('prov-signer-pill');
+      const rationaleEl = document.getElementById('prov-rationale');
+      const detailsEl = document.getElementById('prov-details');
+      if (!panel) return;
+
+      if (!prov) {
+        statusPill.className = 'prov-pill unavailable';
+        statusPill.textContent = 'Provenance not reported';
+        originPill.style.display = 'none';
+        signerPill.style.display = 'none';
+        rationaleEl.textContent = 'This backend build did not return a provenance section.';
+        detailsEl.style.display = 'none';
+        detailsEl.innerHTML = '';
+        return;
+      }
+
+      // Status pill — pin the language so "no manifest" and
+      // "validator unavailable" never read as "authentic".
+      const statusMap = {
+        valid:                 { text: 'Valid manifest',              cls: 'valid' },
+        invalid_or_tampered:   { text: 'Manifest invalid or altered', cls: 'invalid' },
+        untrusted_signer:      { text: 'Untrusted signer',            cls: 'untrusted' },
+        absent:                { text: 'No manifest detected',        cls: 'absent' },
+        unsupported_format:    { text: 'Unsupported format',          cls: 'absent' },
+        validator_unavailable: { text: 'Validator unavailable',       cls: 'unavailable' },
+        error:                 { text: 'Validation error',            cls: 'error' },
+      };
+      const s = statusMap[prov.status] || { text: prov.status || 'unknown', cls: 'unavailable' };
+      statusPill.className = 'prov-pill ' + s.cls;
+      statusPill.textContent = s.text;
+
+      // Origin pill — only meaningful when a manifest was actually
+      // parsed. Suppress it for absent/unavailable/error to avoid
+      // implying a claim exists.
+      const showOrigin = ['valid', 'untrusted_signer', 'invalid_or_tampered'].includes(prov.status);
+      if (!showOrigin) {
+        originPill.style.display = 'none';
+      } else {
+        const originMap = {
+          ai_generated:            { text: 'Claim: AI-generated',            cls: 'origin-ai'   },
+          ai_modified:             { text: 'Claim: AI-modified',             cls: 'origin-ai'   },
+          camera_or_human_origin:  { text: 'Claim: camera / human origin',   cls: 'origin-cam'  },
+          conflicting:             { text: 'Claim: conflicting assertions',  cls: 'origin-none' },
+          unspecified:             { text: 'No origin assertion',            cls: 'origin-none' },
+        };
+        const o = originMap[prov.origin_claim] || originMap.unspecified;
+        originPill.style.display = '';
+        originPill.className = 'prov-pill ' + o.cls;
+        originPill.textContent = o.text;
+      }
+
+      // Signer trust pill — only when we know.
+      if (prov.signer_trusted === true) {
+        signerPill.style.display = '';
+        signerPill.className = 'prov-pill valid';
+        signerPill.textContent = 'Signer trusted';
+      } else if (prov.signer_trusted === false) {
+        signerPill.style.display = '';
+        signerPill.className = 'prov-pill untrusted';
+        signerPill.textContent = 'Signer not trusted';
+      } else {
+        signerPill.style.display = 'none';
+      }
+
+      rationaleEl.textContent = prov.rationale || '';
+
+      // Populate the details grid only when we have manifest-derived
+      // data — keeps the "absent" and "unavailable" states clean.
+      detailsEl.innerHTML = '';
+      const addRow = (label, value) => {
+        if (value === null || value === undefined || value === '' ||
+            (Array.isArray(value) && value.length === 0)) return;
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.textContent = Array.isArray(value) ? value.join(', ') : String(value);
+        detailsEl.appendChild(dt);
+        detailsEl.appendChild(dd);
+      };
+      addRow('Claim generator', prov.claim_generator);
+      addRow('Software agents', prov.software_agents);
+      addRow('Actions', prov.actions);
+      addRow('Digital source types', prov.digital_source_types);
+      addRow('Validation state', prov.validation_state);
+      if (prov.validation_errors && prov.validation_errors.length > 0) {
+        addRow('Validation errors', prov.validation_errors);
+      }
+      detailsEl.style.display = detailsEl.childElementCount > 0 ? '' : 'none';
     }
 
     // --- History functions ---
