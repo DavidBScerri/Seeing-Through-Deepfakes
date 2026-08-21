@@ -32,6 +32,7 @@ from src.genai_detection.integration_pipeline.fusion import (
     extract_visual_ai_probability,
     crop_face_region,
 )
+from src.genai_detection.watermark_module import TrustMarkDetector, TrustMarkStatus
 from src.deepfake_detection.gradcam_face_analysis import compute_occlusion_saliency, _overlay_heatmap
 
 # Frontend (index.html) lives outside src/ under web/ so the backend
@@ -98,8 +99,19 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
             try:
                 visual_classifier = self.server.visual_classifier
                 deepfake_classifier = self.server.deepfake_classifier
+                # Watermark detector is scheme-specific (Adobe TrustMark).
+                # Deliberately kept off the fusion path — see run_analysis_pipeline
+                # docstring and CLAUDE.md's fusion-formula rule.
+                watermark_detector = getattr(self.server, "watermark_detector", None)
 
-                result = run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classifier, filename=filename)
+                result = run_analysis_pipeline(
+                    file_data,
+                    params,
+                    visual_classifier,
+                    deepfake_classifier,
+                    filename=filename,
+                    watermark_detector=watermark_detector,
+                )
                 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -157,6 +169,86 @@ def parse_multipart_form(body: bytes, content_type: str) -> tuple[bytes | None, 
     return file_data, filename, params
 
 
+#: Truncation length for TrustMark payloads exposed in the ordinary UI
+#: response. The full payload stays available to research consumers by
+#: rebuilding the TrustMarkResult from the detector directly — the web
+#: card only needs a short preview.
+_WATERMARK_PAYLOAD_PREVIEW_LEN = 32
+
+
+def _build_watermark_payload(watermark_detector, file_data: bytes) -> dict[str, object]:
+    """
+    Runs the (optional) TrustMark detector against the uploaded bytes
+    and shapes its :class:`TrustMarkResult` into the JSON dict the
+    frontend renders.
+
+    Missing detector, missing library, missing weights and unexpected
+    exceptions all resolve to a stable-shape dict — the analysis
+    request must still succeed when TrustMark is not installed or its
+    model is unavailable.
+
+    The payload is truncated to a short preview so an unusually long
+    or binary-looking decoded string does not bloat the JSON response;
+    the full decoded string stays available to research consumers via
+    the detector's return value directly.
+    """
+    from src.genai_detection.watermark_module import (
+        SCHEME_NAME as _WM_SCHEME,
+        SCOPE_STATEMENT as _WM_SCOPE,
+        SUPPORTED_VARIANTS as _WM_VARIANTS,
+        TrustMarkResult,
+        TrustMarkStatus as _WMStatus,
+    )
+
+    if watermark_detector is None:
+        # No detector attached — never invent a "not detected" result.
+        result = TrustMarkResult(
+            status=_WMStatus.DETECTOR_UNAVAILABLE,
+            rationale=(
+                "TrustMark detector is not attached to this server build. "
+                "Watermark evidence card is unavailable."
+            ),
+            error_details="watermark_detector is None on the server object.",
+        )
+    else:
+        try:
+            result = watermark_detector.analyse(file_data)
+        except Exception as exc:
+            traceback.print_exc()
+            result = TrustMarkResult(
+                status=_WMStatus.ERROR,
+                rationale="TrustMark detector raised unexpectedly.",
+                error_details=f"{type(exc).__name__}: {exc}",
+            )
+
+    payload_preview: str | None = None
+    payload_truncated = False
+    if result.payload is not None:
+        if len(result.payload) > _WATERMARK_PAYLOAD_PREVIEW_LEN:
+            payload_preview = result.payload[:_WATERMARK_PAYLOAD_PREVIEW_LEN] + "…"
+            payload_truncated = True
+        else:
+            payload_preview = result.payload
+
+    return {
+        "scheme": result.scheme,
+        "supported_variants": result.supported_variants,
+        "variant_used": result.variant_used,
+        "status": result.status.value,
+        "detected": result.detected,
+        "schema_version": result.schema_version,
+        # Only ever a short preview — the full payload stays behind the
+        # detector's Python return value so ordinary UI never renders
+        # something long or binary-looking.
+        "payload_preview": payload_preview,
+        "payload_truncated": payload_truncated,
+        "rationale": result.rationale,
+        "error_details": result.error_details,
+        "processing_time_seconds": result.processing_time_seconds,
+        "scope_statement": result.scope_statement,
+    }
+
+
 def _temp_suffix_for(filename: str | None) -> str:
     """ExifTool's handling is file-type dependent, so keep the uploaded extension when it's a known image type."""
     if filename:
@@ -166,7 +258,27 @@ def _temp_suffix_for(filename: str | None) -> str:
     return ".png"
 
 
-def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classifier, filename=None):
+def run_analysis_pipeline(
+    file_data,
+    params,
+    visual_classifier,
+    deepfake_classifier,
+    filename=None,
+    watermark_detector=None,
+):
+    """
+    Runs the full evidence pipeline against one uploaded image and
+    returns the JSON payload the frontend expects.
+
+    ``watermark_detector`` is optional. When supplied it produces a
+    scheme-specific TrustMark evidence card exposed under the
+    ``watermark`` key of the response — the result is deliberately NOT
+    fed into fusion, and adding a fusion weight for it would need
+    separate evaluation and David's sign-off (see CLAUDE.md).
+    When absent, the response still carries a ``watermark`` block with
+    ``status=detector_unavailable`` so the UI can render a stable card
+    on every build.
+    """
     pil_image = Image.open(io.BytesIO(file_data))
     if pil_image.mode != "RGB":
         pil_image = pil_image.convert("RGB")
@@ -335,6 +447,12 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
         "suspicious_perfect_timestamp": meta_features.suspicious_perfect_timestamp,
     }
 
+    # Watermark evidence (Adobe TrustMark, scheme-specific). Runs on
+    # the original bytes we already have, so no re-decoding into a
+    # possibly resized PIL image touches the pixels TrustMark reads.
+    # NOT fed into fusion — see run_analysis_pipeline docstring.
+    watermark_dict = _build_watermark_payload(watermark_detector, file_data)
+
     # Provenance is a SEPARATE evidence object — the fusion formula in
     # this task is intentionally unchanged, so this block reports the
     # C2PA validator's findings without folding them into P(AI)_m.
@@ -372,6 +490,7 @@ def run_analysis_pipeline(file_data, params, visual_classifier, deepfake_classif
             "features": meta_features_dict,
         },
         "provenance": provenance_dict,
+        "watermark": watermark_dict,
         "visual": {
             "probability": visual_ai_prob,
             "prediction": visual_result["prediction"],
@@ -403,20 +522,36 @@ def find_free_port():
 
 
 class PipelineHTTPServer(HTTPServer):
-    def __init__(self, server_address, RequestHandlerClass, visual_classifier, deepfake_classifier):
+    def __init__(
+        self,
+        server_address,
+        RequestHandlerClass,
+        visual_classifier,
+        deepfake_classifier,
+        watermark_detector=None,
+    ):
         self.visual_classifier = visual_classifier
         self.deepfake_classifier = deepfake_classifier
+        # Optional and cheap to attach — the detector loads its model
+        # only on the first watermark analysis, never at startup.
+        self.watermark_detector = watermark_detector
         super().__init__(server_address, RequestHandlerClass)
 
 
-def create_server(visual_classifier, deepfake_classifier):
+def create_server(visual_classifier, deepfake_classifier, watermark_detector=None):
     """Binds a PipelineHTTPServer on a free localhost port and returns (server, url)."""
     port = find_free_port()
-    server = PipelineHTTPServer(('127.0.0.1', port), PipelineRequestHandler, visual_classifier, deepfake_classifier)
+    server = PipelineHTTPServer(
+        ('127.0.0.1', port),
+        PipelineRequestHandler,
+        visual_classifier,
+        deepfake_classifier,
+        watermark_detector=watermark_detector,
+    )
     return server, f"http://127.0.0.1:{port}"
 
 
-def start_server_thread(visual_classifier, deepfake_classifier):
+def start_server_thread(visual_classifier, deepfake_classifier, watermark_detector=None):
     global _active_server, _server_thread
 
     if _active_server is not None:
@@ -428,7 +563,7 @@ def start_server_thread(visual_classifier, deepfake_classifier):
             _server_thread.join()
             _server_thread = None
 
-    server, url = create_server(visual_classifier, deepfake_classifier)
+    server, url = create_server(visual_classifier, deepfake_classifier, watermark_detector=watermark_detector)
     _active_server = server
 
     def serve():
@@ -480,7 +615,12 @@ if __name__ == "__main__":
         metadata_path=str(deepfake_meta_path),
     )
 
-    server, url = create_server(visual_model, deepfake_model)
+    # Attach the TrustMark watermark detector. Construction is cheap:
+    # no model weights load until the first watermark analysis request,
+    # so a missing/unreachable trustmark package cannot block startup.
+    watermark_model = TrustMarkDetector()
+
+    server, url = create_server(visual_model, deepfake_model, watermark_detector=watermark_model)
     print(f"\nStandalone server running at {url}")
     webbrowser.open(url)
     try:

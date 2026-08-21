@@ -74,6 +74,33 @@ class _StubDeepfakeClassifier:
         }
 
 
+class _StubTrustMarkDetector:
+    """
+    Test double for the watermark-module detector — returns a
+    NOT_DETECTED result without touching the real trustmark library.
+    Used to exercise the watermark section of the /api/analyse response
+    without requiring the ~hundreds of MB of TrustMark weights.
+    """
+
+    def analyse(self, image):
+        from src.genai_detection.watermark_module import (
+            SCOPE_STATEMENT,
+            SUPPORTED_VARIANTS,
+            TrustMarkResult,
+            TrustMarkStatus,
+        )
+
+        return TrustMarkResult(
+            supported_variants=list(SUPPORTED_VARIANTS),
+            variant_used="Q",
+            status=TrustMarkStatus.NOT_DETECTED,
+            detected=False,
+            rationale="stub: no watermark decoded — used for smoke tests.",
+            processing_time_seconds=0.001,
+            scope_statement=SCOPE_STATEMENT,
+        )
+
+
 def _tiny_png_bytes(colour=(200, 40, 40)) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (16, 16), colour).save(buf, format="PNG")
@@ -100,7 +127,11 @@ def stub_server(monkeypatch):
         lambda img_np, sal, alpha=0.5, cmap="hot": img_np.astype(np.float32) / 255.0,
     )
 
-    server, url = app_mod.create_server(_StubVisualClassifier(), _StubDeepfakeClassifier())
+    server, url = app_mod.create_server(
+        _StubVisualClassifier(),
+        _StubDeepfakeClassifier(),
+        watermark_detector=_StubTrustMarkDetector(),
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -143,7 +174,7 @@ def test_post_analyse_returns_json_with_pipeline_shape(stub_server):
     payload = json.loads(resp.read())
 
     # Shape checks — the frontend depends on these keys existing.
-    for key in ("verdict", "verdict_type", "fusion", "metadata", "visual"):
+    for key in ("verdict", "verdict_type", "fusion", "metadata", "visual", "watermark"):
         assert key in payload, f"missing {key} in analyse response"
     assert isinstance(payload["fusion"]["probability"], float)
     assert isinstance(payload["fusion"]["is_ai"], bool)
@@ -152,6 +183,20 @@ def test_post_analyse_returns_json_with_pipeline_shape(stub_server):
     # No face in the stub, so cropped_visual is None and no deepfake stage ran.
     assert payload.get("cropped_visual") is None
     assert payload.get("deepfake") is None
+
+    # Watermark section — the frontend depends on the full shape of the
+    # scheme-specific TrustMark card, including the scope statement so
+    # a negative result cannot be rebranded as "real" / "unwatermarked".
+    wm = payload["watermark"]
+    assert wm["scheme"] == "Adobe TrustMark"
+    assert wm["status"] == "not_detected"
+    assert wm["detected"] is False
+    assert wm["schema_version"] is None
+    assert wm["payload_preview"] is None
+    assert wm["payload_truncated"] is False
+    assert wm["variant_used"] == "Q"
+    assert isinstance(wm["supported_variants"], list) and "Q" in wm["supported_variants"]
+    assert "TrustMark" in wm["scope_statement"]
 
 
 def test_pipeline_cleans_up_exiftool_tempfile(monkeypatch):

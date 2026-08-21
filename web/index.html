@@ -1457,6 +1457,44 @@
                   </div>
                 </div>
 
+                <!-- 1b. Watermark Evidence (scheme-specific: Adobe TrustMark) -->
+                <!--
+                  Reports whether the image carries an Adobe TrustMark
+                  watermark. Scoped, non-authoritative, NOT fed into the
+                  fusion formula — a negative result means only "no
+                  supported TrustMark watermark was decoded", never
+                  "no watermark exists", "not AI-generated" or "real".
+                -->
+                <div class="accordion-item" id="acc-watermark">
+                  <div class="accordion-header">
+                    <div class="accordion-header-left">
+                      <span>💧 Watermark Evidence</span>
+                    </div>
+                    <svg class="accordion-header-icon icon"><use href="#icon-chevron"/></svg>
+                  </div>
+                  <div class="accordion-body">
+                    <div class="accordion-content">
+                      <div class="prov-panel" id="wm-panel">
+                        <div class="prov-panel-header">
+                          <span class="prov-title">💧 <span id="wm-scheme">Adobe TrustMark</span></span>
+                          <span class="prov-pill" id="wm-status-pill">…</span>
+                          <span class="prov-pill prov-signer-pill-hidden" id="wm-variant-pill">…</span>
+                          <span class="prov-pill prov-signer-pill-hidden" id="wm-schema-pill">…</span>
+                        </div>
+                        <p class="prov-rationale" id="wm-rationale">
+                          Awaiting analysis.
+                        </p>
+                        <dl class="prov-details hidden" id="wm-details">
+                          <!-- populated dynamically -->
+                        </dl>
+                        <p class="prov-footnote" id="wm-scope">
+                          <!-- populated dynamically with the scope statement -->
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- 2. Visual Classifier Module -->
                 <div class="accordion-item" id="acc-visual">
                   <div class="accordion-header">
@@ -1971,6 +2009,7 @@
       }
 
       renderProvenance(data.provenance);
+      renderWatermark(data.watermark);
 
       // Metadata rationale
       const rationaleList = document.getElementById('meta-rationale');
@@ -2197,6 +2236,108 @@
         addRow('Validation errors', prov.validation_errors);
       }
       detailsEl.classList.toggle('hidden', detailsEl.childElementCount === 0);
+    }
+
+    // --- Watermark Evidence card (scheme-specific: Adobe TrustMark) ---
+    // Renders the `watermark` block from /api/analyse. Kept deliberately
+    // scoped: the scheme name and scope footnote are always shown so
+    // users cannot mistake a TrustMark-negative for "no watermark" or
+    // "not AI-generated". Payload preview is short by design (long or
+    // binary-looking bitstrings do not belong in ordinary UI).
+    function renderWatermark(wm) {
+      const panel = document.getElementById('wm-panel');
+      const schemeEl = document.getElementById('wm-scheme');
+      const statusPill = document.getElementById('wm-status-pill');
+      const variantPill = document.getElementById('wm-variant-pill');
+      const schemaPill = document.getElementById('wm-schema-pill');
+      const rationaleEl = document.getElementById('wm-rationale');
+      const detailsEl = document.getElementById('wm-details');
+      const scopeEl = document.getElementById('wm-scope');
+      if (!panel) return;
+
+      if (!wm) {
+        schemeEl.textContent = 'Adobe TrustMark';
+        statusPill.className = 'prov-pill unavailable';
+        statusPill.textContent = 'Watermark evidence not reported';
+        variantPill.classList.add('prov-signer-pill-hidden');
+        schemaPill.classList.add('prov-signer-pill-hidden');
+        rationaleEl.textContent = 'This backend build did not return a watermark section.';
+        detailsEl.classList.add('hidden');
+        detailsEl.innerHTML = '';
+        scopeEl.textContent = 'TrustMark detection does not detect SynthID or arbitrary provider watermarks; absence of a supported watermark is inconclusive.';
+        return;
+      }
+
+      schemeEl.textContent = wm.scheme || 'Adobe TrustMark';
+
+      const statusMap = {
+        detected:              { text: 'TrustMark watermark decoded', cls: 'valid' },
+        not_detected:          { text: 'No TrustMark watermark decoded', cls: 'absent' },
+        unsupported:           { text: 'Unsupported for this input',    cls: 'unavailable' },
+        detector_unavailable:  { text: 'Detector unavailable',          cls: 'unavailable' },
+        error:                 { text: 'Detector error',                cls: 'error' },
+      };
+      const s = statusMap[wm.status] || { text: wm.status || 'unknown', cls: 'unavailable' };
+      statusPill.className = 'prov-pill ' + s.cls;
+      statusPill.textContent = s.text;
+
+      // Variant pill — always meaningful when the detector actually ran.
+      if (wm.variant_used) {
+        variantPill.classList.remove('prov-signer-pill-hidden');
+        variantPill.className = 'prov-pill';
+        variantPill.textContent = 'Variant: ' + wm.variant_used;
+      } else {
+        variantPill.classList.add('prov-signer-pill-hidden');
+      }
+
+      // Schema pill — only meaningful on a positive detection.
+      if (wm.status === 'detected' && wm.schema_version !== null && wm.schema_version !== undefined) {
+        schemaPill.classList.remove('prov-signer-pill-hidden');
+        schemaPill.className = 'prov-pill valid';
+        schemaPill.textContent = 'Schema ' + wm.schema_version;
+      } else {
+        schemaPill.classList.add('prov-signer-pill-hidden');
+      }
+
+      rationaleEl.textContent = wm.rationale || '';
+
+      // Details grid — supported variants list and (for positive
+      // decodes) a short payload preview. The full payload stays
+      // behind the detector's Python return value; UI does not render
+      // arbitrarily long or binary-looking strings.
+      detailsEl.innerHTML = '';
+      const addRow = (label, value) => {
+        if (value === null || value === undefined || value === '' ||
+            (Array.isArray(value) && value.length === 0)) return;
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.textContent = Array.isArray(value) ? value.join(', ') : String(value);
+        detailsEl.appendChild(dt);
+        detailsEl.appendChild(dd);
+      };
+      addRow('Supported variants', wm.supported_variants);
+      if (wm.status === 'detected') {
+        const preview = wm.payload_preview;
+        if (preview) {
+          addRow('Payload preview', preview + (wm.payload_truncated ? '  (truncated)' : ''));
+        }
+      }
+      if (typeof wm.processing_time_seconds === 'number') {
+        addRow('Processing time', wm.processing_time_seconds.toFixed(3) + ' s');
+      }
+      // Only expose detector-availability diagnostics — never a raw
+      // stack trace — in ordinary UI. The full error string is still
+      // accessible in the raw JSON response for research use.
+      if (wm.status === 'detector_unavailable' || wm.status === 'error') {
+        addRow('Diagnostic', wm.error_details || '(no additional details)');
+      }
+      detailsEl.classList.toggle('hidden', detailsEl.childElementCount === 0);
+
+      // Fixed scope statement — always shown so a negative result
+      // cannot be mistaken for "no watermark" or "real".
+      scopeEl.textContent = wm.scope_statement ||
+        'TrustMark detection does not detect SynthID or arbitrary provider watermarks; absence of a supported watermark is inconclusive.';
     }
 
     // --- History functions ---

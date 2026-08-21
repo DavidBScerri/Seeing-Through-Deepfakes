@@ -27,3 +27,10 @@ pytest
 # runs without it (validator_unavailable), it is only required for
 # actual provenance validation.
 c2pa-python>=0.37
+# Adobe TrustMark — scheme-specific watermark detector wrapped by
+# src/genai_detection/watermark_module/. Import and model download are
+# lazy (first analysis call), so a missing package or unreachable
+# model host cannot block app startup — the watermark card just
+# reports status=detector_unavailable.
+trustmark
+
