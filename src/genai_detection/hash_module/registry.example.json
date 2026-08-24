@@ -1,0 +1,14 @@
+{
+  "scheme": "SHA-256 byte-exact hash",
+  "notes": "Committed schema-reference registry. This file is NEVER used at runtime; the live registry path comes from the SEEING_THROUGH_DEEPFAKES_HASH_REGISTRY environment variable, an explicit constructor argument, or the default under data/hash_registry/ (gitignored). Each entry stores only a SHA-256 digest and small descriptive metadata — no image bytes, thumbnails, embeddings, or perceptual hashes are ever recorded. See src/genai_detection/hash_module/README.md for the closed schema.",
+  "records": [
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "origin_label": "unknown",
+      "provider": "example",
+      "model": null,
+      "source_reference": "empty-input reference vector (RFC-style SHA-256 of the empty string)",
+      "notes": "Illustrative record only — safe to delete when authoring a live registry."
+    }
+  ]
+}

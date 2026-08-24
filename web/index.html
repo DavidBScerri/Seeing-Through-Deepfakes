@@ -1495,6 +1495,44 @@
                   </div>
                 </div>
 
+                <!-- 1c. Hash Evidence (SHA-256 byte-exact) -->
+                <!--
+                  Reports whether the uploaded bytes match a previously
+                  registered SHA-256 digest. Byte-exact only: any
+                  recompression, metadata edit or single-bit change
+                  normally alters the digest. A no-match result is
+                  INCONCLUSIVE — never rendered as "not AI-generated"
+                  or "real". Not fed into the fusion formula.
+                -->
+                <div class="accordion-item" id="acc-hash">
+                  <div class="accordion-header">
+                    <div class="accordion-header-left">
+                      <span>🔗 Hash Evidence</span>
+                    </div>
+                    <svg class="accordion-header-icon icon"><use href="#icon-chevron"/></svg>
+                  </div>
+                  <div class="accordion-body">
+                    <div class="accordion-content">
+                      <div class="prov-panel" id="hash-panel">
+                        <div class="prov-panel-header">
+                          <span class="prov-title">🔗 <span id="hash-scheme">SHA-256 byte-exact hash</span></span>
+                          <span class="prov-pill" id="hash-status-pill">…</span>
+                          <span class="prov-pill prov-signer-pill-hidden" id="hash-origin-pill">…</span>
+                        </div>
+                        <p class="prov-rationale" id="hash-rationale">
+                          Awaiting analysis.
+                        </p>
+                        <dl class="prov-details hidden" id="hash-details">
+                          <!-- populated dynamically -->
+                        </dl>
+                        <p class="prov-footnote" id="hash-scope">
+                          <!-- populated dynamically with the scope statement -->
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- 2. Visual Classifier Module -->
                 <div class="accordion-item" id="acc-visual">
                   <div class="accordion-header">
@@ -2010,6 +2048,7 @@
 
       renderProvenance(data.provenance);
       renderWatermark(data.watermark);
+      renderHash(data.hash);
 
       // Metadata rationale
       const rationaleList = document.getElementById('meta-rationale');
@@ -2338,6 +2377,112 @@
       // cannot be mistaken for "no watermark" or "real".
       scopeEl.textContent = wm.scope_statement ||
         'TrustMark detection does not detect SynthID or arbitrary provider watermarks; absence of a supported watermark is inconclusive.';
+    }
+
+    // --- Hash Evidence card (SHA-256 byte-exact) ---
+    // Renders the `hash` block from /api/analyse. Byte-exact only — a
+    // no-match result is INCONCLUSIVE and must never be shown as
+    // "not AI-generated" or "real". The scope footnote is always
+    // rendered so the caveat cannot be lost.
+    function renderHash(hash) {
+      const panel = document.getElementById('hash-panel');
+      const schemeEl = document.getElementById('hash-scheme');
+      const statusPill = document.getElementById('hash-status-pill');
+      const originPill = document.getElementById('hash-origin-pill');
+      const rationaleEl = document.getElementById('hash-rationale');
+      const detailsEl = document.getElementById('hash-details');
+      const scopeEl = document.getElementById('hash-scope');
+      if (!panel) return;
+
+      // Default scope copy — matches the module's SCOPE_STATEMENT when
+      // the backend forgets to send one so the UI never loses the caveat.
+      const defaultScope =
+        'SHA-256 is byte-exact, not perceptual. Any recompression, metadata edit or single-bit change normally changes the digest. A no-match result means only that no byte-identical file has been registered; it does NOT prove the image is real, unmodified, or human-authored.';
+
+      if (!hash) {
+        schemeEl.textContent = 'SHA-256 byte-exact hash';
+        statusPill.className = 'prov-pill unavailable';
+        statusPill.textContent = 'Hash evidence not reported';
+        originPill.classList.add('prov-signer-pill-hidden');
+        rationaleEl.textContent = 'This backend build did not return a hash section.';
+        detailsEl.classList.add('hidden');
+        detailsEl.innerHTML = '';
+        scopeEl.textContent = defaultScope;
+        return;
+      }
+
+      schemeEl.textContent = hash.scheme || 'SHA-256 byte-exact hash';
+
+      const statusMap = {
+        exact_match:           { text: 'Exact byte-for-byte match',     cls: 'valid' },
+        no_match:              { text: 'No exact match (inconclusive)', cls: 'absent' },
+        registry_unavailable:  { text: 'Registry unavailable',          cls: 'unavailable' },
+        invalid_registry:      { text: 'Registry invalid',              cls: 'unavailable' },
+        error:                 { text: 'Lookup error',                  cls: 'error' },
+      };
+      const s = statusMap[hash.status] || { text: hash.status || 'unknown', cls: 'unavailable' };
+      statusPill.className = 'prov-pill ' + s.cls;
+      statusPill.textContent = s.text;
+
+      // Origin pill — ONLY populated on a real EXACT_MATCH. A missing
+      // match must never claim any origin, AI-related or otherwise.
+      if (hash.status === 'exact_match' && hash.match && hash.match.origin_label) {
+        const originLabelMap = {
+          ai_generated:    { text: 'Registered origin: AI-generated',  cls: 'untrusted' },
+          ai_modified:     { text: 'Registered origin: AI-modified',   cls: 'untrusted' },
+          camera_or_human: { text: 'Registered origin: camera/human',  cls: 'valid' },
+          unknown:         { text: 'Registered origin: unknown',       cls: 'unavailable' },
+        };
+        const o = originLabelMap[hash.match.origin_label] || { text: hash.match.origin_label, cls: 'unavailable' };
+        originPill.classList.remove('prov-signer-pill-hidden');
+        originPill.className = 'prov-pill ' + o.cls;
+        originPill.textContent = o.text;
+      } else {
+        originPill.classList.add('prov-signer-pill-hidden');
+      }
+
+      rationaleEl.textContent = hash.rationale || '';
+
+      // Details grid — digest and, on a match, the recorded metadata.
+      detailsEl.innerHTML = '';
+      const addRow = (label, value) => {
+        if (value === null || value === undefined || value === '' ||
+            (Array.isArray(value) && value.length === 0)) return;
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.textContent = Array.isArray(value) ? value.join(', ') : String(value);
+        detailsEl.appendChild(dt);
+        detailsEl.appendChild(dd);
+      };
+      if (hash.sha256) {
+        // Short-hand digest for display; full digest lives in the raw
+        // JSON response for research use.
+        const digest = hash.sha256;
+        const preview = digest.length > 24
+          ? digest.slice(0, 12) + '…' + digest.slice(-8)
+          : digest;
+        addRow('SHA-256', preview);
+      }
+      if (typeof hash.registry_entry_count === 'number') {
+        addRow('Registry entries', String(hash.registry_entry_count));
+      }
+      if (hash.registry_path) {
+        addRow('Registry path', hash.registry_path);
+      }
+      if (hash.status === 'exact_match' && hash.match) {
+        addRow('Recorded label', hash.match.origin_label);
+        addRow('Recorded provider', hash.match.provider);
+        addRow('Recorded model', hash.match.model);
+        addRow('Recorded source reference', hash.match.source_reference);
+        addRow('Recorded notes', hash.match.notes);
+      }
+      if (hash.status === 'registry_unavailable' || hash.status === 'invalid_registry' || hash.status === 'error') {
+        addRow('Diagnostic', hash.error_details || '(no additional details)');
+      }
+      detailsEl.classList.toggle('hidden', detailsEl.childElementCount === 0);
+
+      scopeEl.textContent = hash.scope_statement || defaultScope;
     }
 
     // --- History functions ---

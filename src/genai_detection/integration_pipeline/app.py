@@ -33,6 +33,12 @@ from src.genai_detection.integration_pipeline.fusion import (
     crop_face_region,
 )
 from src.genai_detection.watermark_module import TrustMarkDetector, TrustMarkStatus
+from src.genai_detection.hash_module import (
+    HashLookupStatus,
+    HashRegistry,
+    load_registry as load_hash_registry,
+    sha256_bytes,
+)
 from src.deepfake_detection.gradcam_face_analysis import compute_occlusion_saliency, _overlay_heatmap
 
 # Frontend (index.html) lives outside src/ under web/ so the backend
@@ -103,6 +109,10 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
                 # Deliberately kept off the fusion path — see run_analysis_pipeline
                 # docstring and CLAUDE.md's fusion-formula rule.
                 watermark_detector = getattr(self.server, "watermark_detector", None)
+                # Hash registry is optional and text-only; a missing or
+                # unset registry surfaces via the hash card as
+                # REGISTRY_UNAVAILABLE, never as "no match".
+                hash_registry = getattr(self.server, "hash_registry", None)
 
                 result = run_analysis_pipeline(
                     file_data,
@@ -111,6 +121,7 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
                     deepfake_classifier,
                     filename=filename,
                     watermark_detector=watermark_detector,
+                    hash_registry=hash_registry,
                 )
                 
                 self.send_response(200)
@@ -249,6 +260,79 @@ def _build_watermark_payload(watermark_detector, file_data: bytes) -> dict[str, 
     }
 
 
+def _build_hash_payload(
+    hash_registry: HashRegistry | None,
+    file_data: bytes,
+) -> dict[str, object]:
+    """
+    Compute the SHA-256 digest of the uploaded bytes and shape the
+    result for the frontend Hash Evidence card.
+
+    The digest is computed on the ORIGINAL upload bytes — before any
+    PIL decode or re-encode — so the digest matches what a user would
+    get by running ``sha256sum`` on the same file.
+
+    When no registry is attached we still return the digest and a
+    stable-shape dict with ``status=registry_unavailable``. A missing
+    registry is NOT the same as "no match"; the UI never renders a
+    "not AI-generated" message from a missing match.
+    """
+    from src.genai_detection.hash_module import (
+        SCHEME_NAME as _HASH_SCHEME,
+        SCOPE_STATEMENT as _HASH_SCOPE,
+    )
+
+    digest = sha256_bytes(file_data)
+
+    if hash_registry is None:
+        return {
+            "scheme": _HASH_SCHEME,
+            "sha256": digest,
+            "status": HashLookupStatus.REGISTRY_UNAVAILABLE.value,
+            "registry_available": False,
+            "registry_path": None,
+            "registry_entry_count": None,
+            "match": None,
+            "rationale": (
+                "No hash registry is attached to this backend build. "
+                "Hash evidence is INCONCLUSIVE — nothing was compared. "
+                "This is NOT the same as 'no match' or 'not AI-generated'."
+            ),
+            "error_details": "hash_registry is None on the server object.",
+            "scope_statement": _HASH_SCOPE,
+        }
+
+    try:
+        result = hash_registry.lookup(digest)
+    except Exception as exc:
+        traceback.print_exc()
+        return {
+            "scheme": _HASH_SCHEME,
+            "sha256": digest,
+            "status": HashLookupStatus.ERROR.value,
+            "registry_available": True,
+            "registry_path": str(getattr(hash_registry, "path", "")) or None,
+            "registry_entry_count": None,
+            "match": None,
+            "rationale": "Hash registry lookup raised unexpectedly.",
+            "error_details": f"{type(exc).__name__}: {exc}",
+            "scope_statement": _HASH_SCOPE,
+        }
+
+    return {
+        "scheme": result.scheme,
+        "sha256": result.sha256,
+        "status": result.status.value,
+        "registry_available": result.registry_available,
+        "registry_path": result.registry_path,
+        "registry_entry_count": result.registry_entry_count,
+        "match": result.match.model_dump(exclude_none=True) if result.match else None,
+        "rationale": result.rationale,
+        "error_details": result.error_details,
+        "scope_statement": result.scope_statement,
+    }
+
+
 def _temp_suffix_for(filename: str | None) -> str:
     """ExifTool's handling is file-type dependent, so keep the uploaded extension when it's a known image type."""
     if filename:
@@ -265,6 +349,7 @@ def run_analysis_pipeline(
     deepfake_classifier,
     filename=None,
     watermark_detector=None,
+    hash_registry=None,
 ):
     """
     Runs the full evidence pipeline against one uploaded image and
@@ -278,7 +363,18 @@ def run_analysis_pipeline(
     When absent, the response still carries a ``watermark`` block with
     ``status=detector_unavailable`` so the UI can render a stable card
     on every build.
+
+    ``hash_registry`` is optional. The SHA-256 digest of the ORIGINAL
+    uploaded bytes is always computed and returned under ``hash``; when
+    a registry is supplied, its lookup result populates the same
+    section. Hash results are also deliberately NOT fed into fusion in
+    this iteration.
     """
+    # SHA-256 must be computed on the ORIGINAL bytes, before any PIL
+    # decode or re-encode — otherwise the digest is a digest of Pillow's
+    # canonicalisation, not of the file the user uploaded.
+    hash_payload = _build_hash_payload(hash_registry, file_data)
+
     pil_image = Image.open(io.BytesIO(file_data))
     if pil_image.mode != "RGB":
         pil_image = pil_image.convert("RGB")
@@ -491,6 +587,10 @@ def run_analysis_pipeline(
         },
         "provenance": provenance_dict,
         "watermark": watermark_dict,
+        # SHA-256 byte-exact fingerprint of the uploaded bytes plus the
+        # optional registry-lookup result. Never fed into fusion — see
+        # run_analysis_pipeline docstring and CLAUDE.md's fusion rule.
+        "hash": hash_payload,
         "visual": {
             "probability": visual_ai_prob,
             "prediction": visual_result["prediction"],
@@ -529,16 +629,26 @@ class PipelineHTTPServer(HTTPServer):
         visual_classifier,
         deepfake_classifier,
         watermark_detector=None,
+        hash_registry=None,
     ):
         self.visual_classifier = visual_classifier
         self.deepfake_classifier = deepfake_classifier
         # Optional and cheap to attach — the detector loads its model
         # only on the first watermark analysis, never at startup.
         self.watermark_detector = watermark_detector
+        # Optional in-memory hash registry — a tiny text lookup table.
+        # Loading fails soft: an unavailable/invalid registry surfaces
+        # in the Hash Evidence card, not as a server crash.
+        self.hash_registry = hash_registry
         super().__init__(server_address, RequestHandlerClass)
 
 
-def create_server(visual_classifier, deepfake_classifier, watermark_detector=None):
+def create_server(
+    visual_classifier,
+    deepfake_classifier,
+    watermark_detector=None,
+    hash_registry=None,
+):
     """Binds a PipelineHTTPServer on a free localhost port and returns (server, url)."""
     port = find_free_port()
     server = PipelineHTTPServer(
@@ -547,11 +657,17 @@ def create_server(visual_classifier, deepfake_classifier, watermark_detector=Non
         visual_classifier,
         deepfake_classifier,
         watermark_detector=watermark_detector,
+        hash_registry=hash_registry,
     )
     return server, f"http://127.0.0.1:{port}"
 
 
-def start_server_thread(visual_classifier, deepfake_classifier, watermark_detector=None):
+def start_server_thread(
+    visual_classifier,
+    deepfake_classifier,
+    watermark_detector=None,
+    hash_registry=None,
+):
     global _active_server, _server_thread
 
     if _active_server is not None:
@@ -563,7 +679,12 @@ def start_server_thread(visual_classifier, deepfake_classifier, watermark_detect
             _server_thread.join()
             _server_thread = None
 
-    server, url = create_server(visual_classifier, deepfake_classifier, watermark_detector=watermark_detector)
+    server, url = create_server(
+        visual_classifier,
+        deepfake_classifier,
+        watermark_detector=watermark_detector,
+        hash_registry=hash_registry,
+    )
     _active_server = server
 
     def serve():
@@ -620,7 +741,26 @@ if __name__ == "__main__":
     # so a missing/unreachable trustmark package cannot block startup.
     watermark_model = TrustMarkDetector()
 
-    server, url = create_server(visual_model, deepfake_model, watermark_detector=watermark_model)
+    # Attach the hash registry, if configured. load_hash_registry returns
+    # either a live HashRegistry or a failure result object — we keep
+    # only the live one; the failure surfaces through the Hash Evidence
+    # card at request time (never as a startup crash).
+    loaded_hash_registry = load_hash_registry()
+    hash_registry = loaded_hash_registry if isinstance(loaded_hash_registry, HashRegistry) else None
+    if hash_registry is not None:
+        print(f"Hash registry loaded: {hash_registry.path} ({len(hash_registry)} records).")
+    else:
+        print(
+            "Hash registry unavailable — Hash Evidence card will report "
+            "registry_unavailable for every upload."
+        )
+
+    server, url = create_server(
+        visual_model,
+        deepfake_model,
+        watermark_detector=watermark_model,
+        hash_registry=hash_registry,
+    )
     print(f"\nStandalone server running at {url}")
     webbrowser.open(url)
     try:

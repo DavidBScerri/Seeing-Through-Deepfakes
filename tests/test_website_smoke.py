@@ -27,6 +27,12 @@ from PIL import Image
 
 from src import PROJECT_ROOT
 from src.genai_detection.integration_pipeline import app as app_mod
+from src.genai_detection.hash_module import (
+    HashRecord,
+    HashRegistry,
+    OriginLabel,
+    sha256_bytes,
+)
 
 
 # ─── Stub classifiers ───────────────────────────────────────────────────────
@@ -108,7 +114,7 @@ def _tiny_png_bytes(colour=(200, 40, 40)) -> bytes:
 
 
 @pytest.fixture
-def stub_server(monkeypatch):
+def stub_server(monkeypatch, tmp_path):
     """Bind app_mod.create_server on 127.0.0.1:<free>, tear it down after the test."""
 
     # Sidestep the real occlusion-saliency call: it wants a valid YuNet
@@ -127,10 +133,27 @@ def stub_server(monkeypatch):
         lambda img_np, sal, alpha=0.5, cmap="hot": img_np.astype(np.float32) / 255.0,
     )
 
+    # Temporary hash registry with one preloaded record whose digest
+    # matches the tiny PNG the smoke test uploads — exercises the
+    # EXACT_MATCH branch without touching any user-visible location.
+    registry_path = tmp_path / "hash_registry.json"
+    registry_path.write_text('{"records": []}')
+    registry = HashRegistry(registry_path)
+    registry.register(
+        HashRecord(
+            sha256=sha256_bytes(_tiny_png_bytes()),
+            origin_label=OriginLabel.AI_GENERATED,
+            provider="smoketest",
+            model="v0",
+            notes="preloaded for the website smoke test",
+        )
+    )
+
     server, url = app_mod.create_server(
         _StubVisualClassifier(),
         _StubDeepfakeClassifier(),
         watermark_detector=_StubTrustMarkDetector(),
+        hash_registry=registry,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -174,7 +197,7 @@ def test_post_analyse_returns_json_with_pipeline_shape(stub_server):
     payload = json.loads(resp.read())
 
     # Shape checks — the frontend depends on these keys existing.
-    for key in ("verdict", "verdict_type", "fusion", "metadata", "visual", "watermark"):
+    for key in ("verdict", "verdict_type", "fusion", "metadata", "visual", "watermark", "hash"):
         assert key in payload, f"missing {key} in analyse response"
     assert isinstance(payload["fusion"]["probability"], float)
     assert isinstance(payload["fusion"]["is_ai"], bool)
@@ -197,6 +220,20 @@ def test_post_analyse_returns_json_with_pipeline_shape(stub_server):
     assert wm["variant_used"] == "Q"
     assert isinstance(wm["supported_variants"], list) and "Q" in wm["supported_variants"]
     assert "TrustMark" in wm["scope_statement"]
+
+    # Hash section — the preloaded registry record matches the tiny PNG
+    # the smoke test uploads, so we should see the exact-match branch
+    # end-to-end (digest computed on the ORIGINAL upload bytes, not on
+    # a re-encoded PIL image).
+    hs = payload["hash"]
+    assert hs["scheme"] == "SHA-256 byte-exact hash"
+    assert hs["status"] == "exact_match"
+    assert hs["sha256"] == sha256_bytes(_tiny_png_bytes())
+    assert hs["registry_available"] is True
+    assert hs["match"] is not None
+    assert hs["match"]["origin_label"] == "ai_generated"
+    assert hs["match"]["provider"] == "smoketest"
+    assert "SHA-256" in hs["scope_statement"]
 
 
 def test_pipeline_cleans_up_exiftool_tempfile(monkeypatch):

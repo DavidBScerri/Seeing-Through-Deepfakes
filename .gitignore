@@ -57,6 +57,15 @@ data/*
 **/data/visual/deepfakejudge/
 **/data/visual/julienlucas/
 
+# ─── Hash module runtime registry ─────────────────────────────────────────
+# The default runtime registry lives at data/hash_registry/registry.json
+# (already covered by `data/*` above). This belt-and-braces rule keeps
+# any registry file out of git even if someone points the hash module at
+# a path outside data/. The only committed registry is the schema-only
+# example inside the package itself.
+**/hash_registry/
+!src/genai_detection/hash_module/registry.example.json
+
 # Tool caches
 graphify-out/
 .codex/
