@@ -1,0 +1,21 @@
+# constraints.txt — exact locally-tested versions.
+#
+# Recorded per the Prompt 4.5 reproducibility step so Prompt 5's
+# robustness experiments can pin the same environment. The versions
+# below were captured with `importlib.metadata.version()` in the
+# working environment on 2026-08-24. Nothing here is invented — if
+# the reader's environment differs, re-capture rather than trusting
+# these numbers verbatim.
+#
+# Usage:   pip install -r requirements.txt -c constraints.txt
+#
+# Python: 3.14.6  (any 3.10+ interpreter is expected to work; this pin
+# just records what the current environment happened to be)
+
+c2pa-python==0.37.7
+trustmark==0.9.1
+pydantic==2.13.3
+pillow==12.2.0
+numpy==1.26.4
+torch==2.11.0
+torchvision==0.26.0

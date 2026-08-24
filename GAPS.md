@@ -2,6 +2,38 @@
 
 Each gap: what it is, where, why it matters, and a fix scoped to a single small task.
 
+> **Prompt 4.5 corrective pass (2026-08-24).** In addition to the historical
+> gaps below, a corrective pass addressed a set of semantic drifts introduced
+> alongside the C2PA / TrustMark / SHA-256 work:
+>
+> - Raw C2PA/provenance plumbing (`c2pa`, `claim_generator`,
+>   `created_software_agent`, `content credentials`, `manifest`) and
+>   ambiguous words (`synthetic`) now contribute exactly zero to the
+>   heuristic `P(AI)_m` — previously they nudged the score via
+>   `keyword_hits`, `binary_hits`, `software_tag_count`, and
+>   `suspicious_only_software_tags`.
+> - IPTC digital-source-type mapping is now conservative — only
+>   `trainedAlgorithmicMedia` / `compositeSynthetic` are AI-generated,
+>   only `compositeWithTrainedAlgorithmicMedia` is AI-modified; the
+>   previously-mislabelled `algorithmicMedia`, `dataDrivenMedia`,
+>   `algorithmicallyEnhanced`, `screenCapture`, `virtualRecording`,
+>   `composite` are treated as UNSPECIFIED.
+> - C2PA validation-state semantics fixed: `Trusted` → `valid` with
+>   `signer_trusted=True`; `Valid` (and legacy `Untrusted`) →
+>   `untrusted_signer`; unknown / `None` → `error`, never `valid`.
+>   New `validation_warnings` list separates informational entries
+>   from hard failures.
+> - "Likely Real" removed from the pipeline output — a fused-negative
+>   result is now reported as an inconclusive verdict with `verdict_type="inconclusive"`;
+>   historical evaluation reports keep the old label as period terminology.
+> - Invalid vs unavailable hash-registry states are preserved end-to-end;
+>   `/api/analyse` reports the exact failure with its diagnostic and
+>   still includes the uploaded file's SHA-256 digest.
+> - TrustMark wrapper now genuinely defaults to CPU and passes
+>   `loadRemover=False, loadBBoxDetector=False` (see the caveat that
+>   upstream may still initialise components its public API cannot
+>   disable).
+
 > **Historical paths.** File locations named below (`src/metadata_module`,
 > `src/visual_module`, `src/integration_pipeline`, `src/deepfake_module`)
 > are the pre-reshuffle paths as of when each gap was written. The current

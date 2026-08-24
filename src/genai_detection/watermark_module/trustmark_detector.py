@@ -79,9 +79,11 @@ class TrustMarkDetector:
         (matches the ``trustmark`` library default).
     device:
         Torch device string passed straight through to
-        ``TrustMark(device=...)``. Empty string (the default) tells the
-        upstream library to pick — for a CPU-only install this stays on
-        CPU, which is what we want for the demo.
+        ``TrustMark(device=...)``. Defaults to ``"cpu"`` — the upstream
+        library interprets an empty string as "auto-select CUDA when
+        available", which we do not want for a demo that must run
+        reproducibly on a CPU-only box. Pass another value explicitly
+        when a specific device is intended.
     verbose:
         Forwarded to ``TrustMark(verbose=...)``. Off by default so the
         web-app log stays clean.
@@ -90,7 +92,7 @@ class TrustMarkDetector:
     def __init__(
         self,
         default_variant: str = DEFAULT_VARIANT,
-        device: str = "",
+        device: str = "cpu",
         verbose: bool = False,
     ) -> None:
         if default_variant not in SUPPORTED_VARIANTS:
@@ -271,15 +273,21 @@ class TrustMarkDetector:
                 raise _DetectorUnavailableError(reason) from exc
 
             try:
-                # loadBBoxDetector defaults to False upstream — do not
-                # opt in, we do not need the bbox stage. Model files
-                # are downloaded/loaded lazily by TrustMark itself into
-                # its own cache directory (adjacent to the library
-                # install by default). This repo never ships them.
+                # This module only decodes watermarks. Explicitly opt
+                # OUT of the watermark-remover and the bbox / localiser
+                # stages — they add memory and download surface for
+                # capabilities we do not use, and upstream loads them
+                # by default (see trustmark/trustmark.py). Documented
+                # caveat: upstream may still initialise auxiliary
+                # components it does not expose an off-switch for; the
+                # constructor arguments above are the extent of what
+                # this wrapper can disable through the public API.
                 model = TrustMark(
                     model_type=variant,
                     device=self.device,
                     verbose=self.verbose,
+                    loadRemover=False,
+                    loadBBoxDetector=False,
                 )
             except Exception as exc:
                 # Model weight download / initialisation failed. Mark

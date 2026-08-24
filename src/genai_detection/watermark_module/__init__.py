@@ -2,7 +2,8 @@
 Watermark detection module.
 
 Scheme-specific detectors for machine-readable watermarks named in the
-EU AI Act Art. 50 / Draft Code of Practice transparency layers.
+EU AI Act Art. 50 transparency layers (see the thesis discussion for
+the specific implementing instruments, which evolve over time).
 
 Today it ships one detector — :class:`TrustMarkDetector`, wrapping
 Adobe's official ``trustmark`` library — plus the typed result models

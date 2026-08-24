@@ -20,9 +20,12 @@
       --text-secondary: #94a3b8; /* slate-400 */
       --text-muted: #64748b;     /* slate-500 */
       
-      --color-real: #10b981;      /* emerald-500 */
+      --color-real: #10b981;      /* emerald-500 — kept for gauge bar only */
       --color-real-bg: rgba(16, 185, 129, 0.1);
       --color-real-border: rgba(16, 185, 129, 0.3);
+      --color-inconclusive: #94a3b8;      /* slate-400 — inconclusive verdict */
+      --color-inconclusive-bg: rgba(148, 163, 184, 0.12);
+      --color-inconclusive-border: rgba(148, 163, 184, 0.3);
       
       --color-ai: #f59e0b;        /* amber-500 */
       --color-ai-bg: rgba(245, 158, 11, 0.1);
@@ -654,9 +657,9 @@
       box-shadow: 0 10px 25px -10px rgba(0,0,0,0.3);
     }
 
-    .verdict-card.real {
-      background-color: var(--color-real-bg);
-      border-color: var(--color-real-border);
+    .verdict-card.inconclusive {
+      background-color: var(--color-inconclusive-bg);
+      border-color: var(--color-inconclusive-border);
     }
     .verdict-card.ai_generated {
       background-color: var(--color-ai-bg);
@@ -676,9 +679,9 @@
       justify-content: center;
       flex-shrink: 0;
     }
-    .verdict-card.real .verdict-icon-container {
-      background-color: rgba(16, 185, 129, 0.2);
-      color: var(--color-real);
+    .verdict-card.inconclusive .verdict-icon-container {
+      background-color: rgba(148, 163, 184, 0.2);
+      color: var(--color-inconclusive);
     }
     .verdict-card.ai_generated .verdict-icon-container {
       background-color: rgba(245, 158, 11, 0.2);
@@ -705,7 +708,7 @@
       font-weight: 700;
       margin-bottom: 4px;
     }
-    .verdict-card.real .verdict-title { color: #34d399; }
+    .verdict-card.inconclusive .verdict-title { color: #cbd5e1; }
     .verdict-card.ai_generated .verdict-title { color: #fbbf24; }
     .verdict-card.deepfake .verdict-title { color: #f87171; }
 
@@ -1252,6 +1255,11 @@
       <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
       <circle cx="8.5" cy="8.5" r="1.5"/>
       <polyline points="21 15 16 10 5 21"/>
+    </symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="16" x2="12" y2="12"/>
+      <line x1="12" y1="8" x2="12.01" y2="8"/>
     </symbol>
     <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3"/>
@@ -1984,9 +1992,13 @@
       // 3. Verdict card customization
       resVerdictCard.className = 'verdict-card ' + data.verdict_type;
       
-      // Swap icons based on type
-      let iconHref = '#icon-check-circle';
-      let titlePrefix = 'Probably Real';
+      // Swap icons based on type. The negative (fused-below-threshold)
+      // outcome is labelled "Inconclusive", NOT "Likely Real": missing
+      // AI evidence is not proof of camera or human origin. See
+      // PROJECT.md's neutral-on-missing-metadata rule and the
+      // provenance-validation "absence is inconclusive" docstring.
+      let iconHref = '#icon-info';
+      let titlePrefix = 'Inconclusive';
       if (data.verdict_type === 'ai_generated') {
         iconHref = '#icon-alert-triangle';
         titlePrefix = 'Probably AI Generated';

@@ -11,8 +11,8 @@ src/
 │   ├── visual_module/          # ViT / Community Forensics classifier
 │   ├── integration_pipeline/   # Decision-fusion engine + web backend (app.py)
 │   ├── watermark_module/       # Adobe TrustMark detector (scheme-specific)
-│   ├── hash_module/            # (stub — reserved for later)
-│   └── evaluation/             # (stub — cross-module robustness harness)
+│   ├── hash_module/            # SHA-256 byte-exact registry lookup
+│   └── evaluation/             # (stub — cross-module robustness harness, Prompt 5)
 └── deepfake_detection/         # Conditional deepfake stage
     ├── deepfake_classifier.py  # YuNet face + DINOv2/FAISS landmark
     ├── gradcam_*_analysis.py   # Occlusion saliency (misnamed for history)
@@ -24,13 +24,31 @@ tests/
 
 ## Modules
 
-- **Visual Module** — Fine-tuned ViT / Community Forensics classifier for distinguishing AI-generated images from real photographs (fine-tuned weights stored as int8 weight deltas).
+- **Visual Module** — The deployed canonical backbone is the **official Community Forensics 384 model (`OwensLab/commfor-model-384`)**, loaded out of the box; the fine-tuned ViT on `dima806/ai_vs_real_image_detection` (int8 weight deltas under `visual_module/fine_tuned_model_delta/`) is kept only as a historical / comparison model, not the deployed classifier.
+- **Hash Module** — SHA-256 byte-exact digest computed over the ORIGINAL upload bytes plus a small text-only registry lookup. Registry records store only a digest and short descriptive metadata (never image bytes, thumbnails, embeddings, or perceptual hashes). Result states distinguish `exact_match`, `no_match`, `registry_unavailable`, `invalid_registry`, and `error` so a missing or malformed registry can never be silently rebranded as "no match". Reported as a separate evidence object — deliberately NOT folded into the fusion formula.
 - **Metadata Module** — Two independent evidence streams:
   1. **Heuristic EXIF/binary indicators** (`metadata_extraction.py`) — ExifTool-driven scan for camera fields, AI provider keywords (openai, midjourney, …), suspicious software-only tags, and binary markers in the file bytes. Feeds `P(AI)_m` into fusion.
-  2. **Cryptographic C2PA provenance** (`provenance_validation.py`) — uses the official `c2pa-python` library to actually validate embedded manifests. Produces a typed `ProvenanceResult` with a `ProvenanceStatus` (`valid`, `invalid_or_tampered`, `untrusted_signer`, `absent`, `unsupported_format`, `validator_unavailable`, `error`) and an `OriginClaim` (`ai_generated`, `ai_modified`, `camera_or_human_origin`, `unspecified`, `conflicting`). Reported as a separate evidence object — deliberately NOT folded into the fusion formula for this iteration.
+  2. **Cryptographic C2PA provenance** (`provenance_validation.py`) — uses the official `c2pa-python` library to actually validate embedded manifests. Produces a typed `ProvenanceResult` with a `ProvenanceStatus` (`valid`, `invalid_or_tampered`, `untrusted_signer`, `absent`, `unsupported_format`, `validator_unavailable`, `error`) and an `OriginClaim` (`ai_generated`, `ai_modified`, `camera_or_human_origin`, `unspecified`, `conflicting`). The three validation states are distinguished per the official c2pa-rs vocabulary: **`Trusted`** → `valid` with `signer_trusted=True`; **`Valid`** (and the legacy `Untrusted`) → `untrusted_signer` (crypto-valid, no trust anchor established); **`Invalid`** or any determined validation failure → `invalid_or_tampered`. An unknown / `None` validation state is reported as `error`, never as `valid`. Hard failures are surfaced on `validation_errors`; informational warnings on `validation_warnings` (they do not invalidate a cryptographically valid manifest on their own). Reported as a separate evidence object — deliberately NOT folded into the fusion formula for this iteration.
 - **Watermark Module** — Scheme-specific Adobe TrustMark detector wrapping the official [`trustmark`](https://github.com/adobe/trustmark) library (see [Watermark Module (TrustMark)](#watermark-module-trustmark) below).
 - **Deepfake Module** — Face detection (YuNet), landmark retrieval (DINOv2 + FAISS), and occlusion-based saliency maps for explainability.
 - **Integration Pipeline** — Decision-fusion engine with a web interface that combines all module outputs into a single verdict.
+
+### Evidence categories and how they combine
+
+Four distinct evidence streams are produced per image. Only the first two
+currently feed the fusion probability `P(AI)`:
+
+| Category | Currently fused? | Notes |
+|---|---|---|
+| Heuristic metadata probability `P(AI)_m` | **Yes** — with `w_m`, `a_m` | Neutral 0.50 on missing metadata. Raw C2PA/provenance plumbing (`c2pa`, `claim_generator`, `created_software_agent`, `content credentials`, `manifest`) and ambiguous words (`synthetic`) contribute exactly zero to the score; they stay visible as descriptive rationale. |
+| Visual classifier probability `P(AI)_v*` | **Yes** — with `w_v`, `a_v` | Community Forensics 384. |
+| Validated C2PA provenance | **No** — separate structured evidence | Cryptographic validation, trust state, IPTC digital-source-type origin. |
+| TrustMark watermark + SHA-256 hash registry | **No** — separate structured evidence | Scheme-specific, byte-exact respectively. Absence is inconclusive; a positive TrustMark or hash match is only as trustworthy as its signer / registrar. |
+
+Adding a fusion weight for any of the second-tier signals requires a
+separate evaluation and David's sign-off per CLAUDE.md's fusion-formula
+rule. Absence of metadata, provenance, TrustMark, or a registry match
+is always **inconclusive** — never rebranded as "real".
 
 ### What "provenance" actually means here
 
@@ -67,13 +85,20 @@ in `CLAUDE.md`).
   — asking about them here returns `unsupported`, never `not_detected`.
 - **Model download and cache:** the `trustmark` package downloads its
   own model weights (from Adobe's S3 host, with MD5 verification) on
-  first use into its own cache directory adjacent to the installed
-  package. This repository never commits TrustMark weights, and never
-  downloads them during module import. Weight loading is **lazy** — the
-  first `TrustMarkDetector.analyse(...)` call for a variant does the
-  work; subsequent calls reuse the cached model instance. To relocate
-  the cache, point the `trustmark` package at your preferred directory
-  through its own configuration.
+  first use into the `models/` directory adjacent to the installed
+  `trustmark` package. This repository never commits TrustMark weights,
+  and never downloads them during module import. Weight loading is
+  **lazy** — the first `TrustMarkDetector.analyse(...)` call for a
+  variant does the work; subsequent calls reuse the cached model
+  instance. The upstream API does not currently expose a public option
+  to relocate that cache directory; treating it as freely relocatable
+  would be inaccurate. Wrapper defaults: `device="cpu"` (the upstream
+  library treats `device=""` as "pick — CUDA if available", which we
+  avoid so the demo stays reproducible on CPU-only boxes); the
+  wrapper also passes `loadRemover=False` and `loadBBoxDetector=False`
+  so the watermark-remover and localiser components are not loaded —
+  upstream may still initialise auxiliary components its public API
+  does not allow the wrapper to disable.
 - **Absence is inconclusive.** A `not_detected` result means only "no
   supported TrustMark watermark was decoded from this image". It does
   NOT mean the image is unwatermarked, real, or free of AI generation
@@ -106,6 +131,15 @@ pip install -r requirements.txt
 ```
 
 ExifTool must be installed separately for the metadata module (`brew install exiftool` on macOS). The C2PA validator (`c2pa-python`) is pulled in by `requirements.txt`; when it is missing the provenance panel reports `validator_unavailable` rather than falling back to a heuristic guess.
+
+For reproducibility, exact locally-tested versions of the critical
+dependencies are recorded in [`constraints.txt`](constraints.txt) — pass
+it to pip alongside the requirements when you want the same environment
+Prompt 5's experiments were captured against:
+
+```bash
+pip install -r requirements.txt -c constraints.txt
+```
 
 ## Tests
 

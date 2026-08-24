@@ -194,6 +194,103 @@ class TestC2paMarkerIsNotAnAiClaim:
         assert "midjourney" in features.unverified_ai_provider_hints
 
 
+class TestProvenanceOnlyStaysNeutralEndToEnd:
+    """Task 1 regression: raw provenance-plumbing text and binary hits
+    must not — via keyword_hits, binary_hits, software_tag_count, or
+    suspicious_only_software_tags — indirectly push the metadata score
+    away from the neutral 0.50. Descriptive fields keep the value
+    visible; scoring does not."""
+
+    def _score(self, raw, binary_hits=None):
+        flat = flatten_metadata(raw)
+        features = build_features(flat, binary_hits=binary_hits or [])
+        score, rationale = score_features(features)
+        return features, score, rationale
+
+    def test_bare_c2pa_string_stays_neutral(self):
+        features, score, _ = self._score({"XMP": {"Description": "c2pa"}})
+        assert features.has_ai_claim is False
+        assert score == pytest.approx(0.50)
+
+    def test_claim_generator_alone_stays_neutral(self):
+        features, score, _ = self._score({"XMP": {"claim_generator": "Adobe Photoshop 25.0"}})
+        assert features.has_ai_claim is False
+        assert features.suspicious_only_software_tags is False, (
+            "claim_generator is provenance plumbing, not an editor tag — "
+            "it must not trigger suspicious_only_software_tags"
+        )
+        assert score == pytest.approx(0.50)
+
+    def test_created_software_agent_alone_stays_neutral(self):
+        features, score, _ = self._score(
+            {"XMP": {"created_software_agent": "Adobe Photoshop 25.0"}}
+        )
+        assert features.has_ai_claim is False
+        assert features.suspicious_only_software_tags is False
+        assert score == pytest.approx(0.50)
+
+    def test_content_credentials_string_stays_neutral(self):
+        features, score, _ = self._score(
+            {"XMP": {"Description": "Content Credentials attached"}}
+        )
+        assert features.has_ai_claim is False
+        assert score == pytest.approx(0.50)
+
+    def test_generic_manifest_field_stays_neutral(self):
+        features, score, _ = self._score({"C2PA": {"manifest": "some-store-uri"}})
+        assert features.has_ai_claim is False
+        assert score == pytest.approx(0.50)
+
+    def test_provenance_only_binary_hits_stay_neutral(self):
+        features, score, _ = self._score({}, binary_hits=["c2pa", "claim_generator"])
+        assert features.has_ai_claim is False
+        assert score == pytest.approx(0.50)
+
+    def test_ambiguous_synthetic_word_stays_neutral(self):
+        features, score, _ = self._score(
+            {"XMP": {"Description": "synthetic aperture radar sample"}}
+        )
+        assert features.has_ai_claim is False
+        assert score == pytest.approx(0.50), (
+            "The word 'synthetic' alone is ambiguous — it must not push "
+            "the score above 0.50 without explicit AI evidence."
+        )
+
+    def test_combination_of_provenance_only_signals_stays_neutral(self):
+        features, score, _ = self._score(
+            {
+                "C2PA": {"Manifest": {"claim_generator": "Adobe Photoshop 25.0"}},
+                "XMP": {
+                    "created_software_agent": "Adobe Photoshop 25.0",
+                    "Description": "Content Credentials attached — synthetic scene",
+                },
+            },
+            binary_hits=["c2pa", "claim_generator"],
+        )
+        assert features.has_c2pa_marker is True
+        assert features.has_ai_claim is False
+        assert features.suspicious_only_software_tags is False
+        assert score == pytest.approx(0.50)
+
+    def test_explicit_ai_provider_still_scores(self):
+        """The negative regressions above must not accidentally silence
+        the genuinely explicit signals — a Midjourney credit line must
+        still push the score up."""
+        features, score, _ = self._score(
+            {"XMP": {"CreatorTool": "Midjourney", "Description": "ai generated"}}
+        )
+        assert features.has_ai_claim is True
+        assert score > 0.50
+
+    def test_provenance_hits_still_appear_in_rationale(self):
+        _, _, rationale = self._score(
+            {"XMP": {"claim_generator": "Adobe Photoshop 25.0"}},
+            binary_hits=["c2pa"],
+        )
+        joined = " ".join(rationale).lower()
+        assert "descriptive" in joined or "c2pa" in joined or "provenance" in joined
+
+
 class TestFlattenMetadata:
     def test_nested_dicts_and_lists_flatten_lowercased(self):
         flat = flatten_metadata({"A": {"B": "Value"}, "C": ["x", "y"]})

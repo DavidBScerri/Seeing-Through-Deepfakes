@@ -61,15 +61,22 @@ except Exception as exc:  # pragma: no cover - environment-dependent
 
 _IPTC_PREFIX = "http://cv.iptc.org/newscodes/digitalsourcetype/"
 
+# Conservative mapping — only classify as AI-generated / AI-modified
+# when the signed assertion EXPLICITLY names a trained-algorithmic
+# generative-AI origin. Ambiguous IPTC values (algorithmicMedia,
+# dataDrivenMedia, algorithmicallyEnhanced, screenCapture, virtualRecording,
+# composite) describe processing/rendering methods and could apply equally
+# to non-generative pipelines — they are recorded in
+# ``digital_source_types`` for auditability but never set
+# ``has_ai_generation_assertion`` / ``has_ai_manipulation_assertion``.
+# See https://cv.iptc.org/newscodes/digitalsourcetype/ for definitions.
+
 _AI_GENERATED_TYPES: set[str] = {
     "trainedAlgorithmicMedia",
     "compositeSynthetic",
-    "algorithmicMedia",
-    "dataDrivenMedia",
 }
 
 _AI_MODIFIED_TYPES: set[str] = {
-    "algorithmicallyEnhanced",
     "compositeWithTrainedAlgorithmicMedia",
 }
 
@@ -78,9 +85,24 @@ _CAMERA_HUMAN_TYPES: set[str] = {
     "computationalCapture",
     "negativeFilm",
     "positiveFilm",
-    "humanEdits",
     "print",
-    "screenCapture",  # arguable; screenshots aren't AI, treat as camera-like
+    "humanEdits",
+    "digitalCreation",
+    "compositeCapture",
+}
+
+# Explicitly-tracked ambiguous types — recognised so we don't silently
+# treat them as generative AI, but classified as UNSPECIFIED. Every value
+# not in the three sets above is treated as UNSPECIFIED as well; this set
+# is kept for documentation and for tests that need to assert the
+# ambiguous path.
+_AMBIGUOUS_TYPES: set[str] = {
+    "algorithmicMedia",
+    "dataDrivenMedia",
+    "algorithmicallyEnhanced",
+    "screenCapture",
+    "virtualRecording",
+    "composite",
 }
 
 
@@ -225,83 +247,119 @@ def _extract_manifest_data(manifest: dict[str, Any]) -> dict[str, Any]:
 
 # ─── Validation-state / trust interpretation ───────────────────────────────
 
-def _interpret_validation(state: str | None, errors: list[str]) -> tuple[bool | None, bool | None]:
+def _interpret_validation(state: str | None) -> tuple[bool | None, bool | None]:
     """
     Translate the C2PA library's validation-state string into
-    (validation_passed, signer_trusted) booleans.
+    ``(validation_passed, signer_trusted)``.
 
-    The library's ``get_validation_state()`` currently returns strings
-    like ``"Valid"``, ``"Invalid"``, ``"Trusted"``, ``"Untrusted"``,
-    ``"OtherError"``. Both fields are ``None`` when the state cannot be
-    interpreted.
+    The official c2pa-rs vocabulary (see
+    https://github.com/contentauth/c2pa-rs/blob/main/sdk/src/validation_results.rs)
+    distinguishes:
+
+    * ``Invalid``  — structural / cryptographic validation failed.
+    * ``Valid``    — cryptographic validation passed, but signer trust
+      is NOT established (no chain to a configured trust anchor).
+    * ``Trusted``  — validation passed AND the signer chains to a
+      trusted authority.
+
+    Older library versions also produce ``Untrusted`` — treat it the
+    same as ``Valid`` (crypto-valid, no trust established).
+
+    ``None`` / unknown states return ``(None, None)`` — we deliberately
+    do NOT fall back to Python truthiness ("no state" is not the same as
+    "signer not in trust list"). The caller is responsible for mapping
+    that indeterminate case to an appropriate status (never VALID).
     """
 
     if state is None:
-        # No state reported but we did open a manifest — treat as
-        # unknown validation. Errors, if any, still surface.
-        return (None if not errors else False, None)
+        return None, None
 
     normalised = state.strip().lower()
 
-    if normalised in {"valid", "trusted"}:
+    if normalised == "trusted":
         return True, True
-    if normalised == "untrusted":
-        # Cryptographic validation passed, but the signer's cert is not
-        # in the configured trust list.
+    if normalised in {"valid", "untrusted"}:
+        # Cryptographic validation passed, but signer trust was NOT
+        # established. `Untrusted` is the legacy spelling for the same
+        # meaning; both must map to (validation_passed=True,
+        # signer_trusted=False) — never conflated with `Trusted`.
         return True, False
     if normalised in {"invalid", "othererror", "error"}:
         return False, None
 
-    # Unknown state — surface errors if any, otherwise leave unknown.
-    if errors:
-        return False, None
+    # Unknown state — never treat as valid.
     return None, None
 
 
-def _collect_validation_errors(reader) -> list[str]:
-    """Best-effort extraction of validation error/warning codes from a
-    ``c2pa.Reader``. Never raises — the reader may not expose the
-    method on older lib versions."""
+def _collect_validation_diagnostics(reader) -> tuple[list[str], list[str]]:
+    """Best-effort extraction of validation ``(failures, warnings)`` from
+    a ``c2pa.Reader``. Never raises — the reader may not expose the
+    method on older lib versions.
 
-    errors: list[str] = []
+    Failures are hard validation-status entries (bad hash, bad signature,
+    missing assertion). Warnings are informational entries that must NOT
+    invalidate a cryptographically valid manifest on their own — they go
+    into ``ProvenanceResult.validation_warnings``.
+    """
+
+    failures: list[str] = []
+    warnings: list[str] = []
     try:
         results = reader.get_validation_results()
     except Exception:
         results = None
 
-    def _harvest(items):
+    def _fmt(entry: dict) -> str | None:
+        code = entry.get("code") or entry.get("kind")
+        explanation = entry.get("explanation") or entry.get("message")
+        if code and explanation:
+            return f"{code}: {explanation}"
+        if code:
+            return str(code)
+        if explanation:
+            return str(explanation)
+        return None
+
+    def _harvest(items, sink: list[str]):
         if not isinstance(items, list):
             return
         for entry in items:
             if isinstance(entry, dict):
-                code = entry.get("code") or entry.get("kind")
-                explanation = entry.get("explanation") or entry.get("message")
-                if code and explanation:
-                    errors.append(f"{code}: {explanation}")
-                elif code:
-                    errors.append(str(code))
-                elif explanation:
-                    errors.append(str(explanation))
+                formatted = _fmt(entry)
+                if formatted:
+                    sink.append(formatted)
 
     if isinstance(results, dict):
-        # activeManifest / ingredientDeltas shapes both surface a `failure`
-        # / `informational` list per manifest — walk defensively.
-        for key, value in results.items():
+        # Each manifest section carries `failure`, `informational`, and
+        # `success` lists. Only `failure` counts as a hard error;
+        # `informational` is surfaced separately as a warning list.
+        for _, value in results.items():
             if isinstance(value, dict):
-                for sub in ("failure", "informational", "success"):
-                    if sub == "success":
-                        continue
-                    _harvest(value.get(sub))
+                _harvest(value.get("failure"), failures)
+                _harvest(value.get("informational"), warnings)
             elif isinstance(value, list):
-                _harvest(value)
+                # Legacy shape: a bare list of status entries. Classify
+                # per-entry — anything explicitly tagged as informational
+                # is a warning, everything else is a failure.
+                for entry in value:
+                    if not isinstance(entry, dict):
+                        continue
+                    formatted = _fmt(entry)
+                    if not formatted:
+                        continue
+                    kind = str(entry.get("kind", "")).lower()
+                    if "informational" in kind or "warning" in kind:
+                        warnings.append(formatted)
+                    else:
+                        failures.append(formatted)
 
     # Older lib versions expose validation_status directly on the JSON.
     try:
         raw = json.loads(reader.json() or "{}")
     except Exception:
         raw = {}
-    _harvest(raw.get("validation_status"))
-    return errors
+    _harvest(raw.get("validation_status"), failures)
+    return failures, warnings
 
 
 # ─── Public entrypoint ─────────────────────────────────────────────────────
@@ -322,11 +380,16 @@ def _rationale(status: ProvenanceStatus, origin: OriginClaim, signer_trusted: bo
     if status is ProvenanceStatus.UNSUPPORTED_FORMAT:
         return "The C2PA validator does not support this file format. Provenance could not be evaluated."
     if status is ProvenanceStatus.ERROR:
-        return "The C2PA validator raised an unexpected error while reading the file."
+        return (
+            "The C2PA validator could not produce a determinable result — "
+            "either it raised an unexpected error, or it returned no "
+            "recognised validation state. The manifest cannot be reported "
+            "as valid."
+        )
     if status is ProvenanceStatus.INVALID_OR_TAMPERED:
         return "A C2PA manifest was found but its cryptographic validation failed — the asset or its manifest appears altered."
     if status is ProvenanceStatus.UNTRUSTED_SIGNER:
-        base = "A C2PA manifest was found and its signature verified, but the signer is not in the configured trust list."
+        base = "A C2PA manifest was found and its signature is cryptographically valid, but signer trust was not established (the signing certificate is not in the configured trust list)."
         if origin is OriginClaim.AI_GENERATED:
             return base + " The manifest claims AI generation."
         if origin is OriginClaim.AI_MODIFIED:
@@ -446,7 +509,7 @@ def _read_provenance(reader) -> ProvenanceResult:
     except Exception:
         validation_state = None
 
-    errors = _collect_validation_errors(reader)
+    failures, warnings = _collect_validation_diagnostics(reader)
 
     active: dict[str, Any] | None
     try:
@@ -470,23 +533,39 @@ def _read_provenance(reader) -> ProvenanceResult:
             "origin_claim": OriginClaim.UNSPECIFIED,
         }
 
-    validation_passed, signer_trusted = _interpret_validation(validation_state, errors)
+    validation_passed, signer_trusted = _interpret_validation(validation_state)
+    # Hard failures from the results dict escalate the outcome even if
+    # the state string reports "Valid" — a failure list overrides the
+    # optimistic state. Informational warnings do NOT invalidate a
+    # cryptographically valid manifest.
+    if failures and validation_passed is not False:
+        validation_passed = False
+        signer_trusted = None
 
     # Status resolution:
-    #   errors + manifest ⇒ invalid_or_tampered
-    #   validation_state == "Untrusted" ⇒ untrusted_signer
-    #   no manifest ⇒ absent (shouldn't reach here — open error caught it,
-    #     but the library sometimes returns an empty manifest store on
-    #     odd assets)
-    #   otherwise valid
+    #   no manifest         ⇒ absent (open error path normally catches
+    #                         this; guard for odd library behaviour)
+    #   failures || Invalid ⇒ invalid_or_tampered
+    #   state unknown/None  ⇒ error (NEVER classified as valid — Python
+    #                         truthiness on None must not become
+    #                         "signer not in trust list")
+    #   Trusted             ⇒ valid
+    #   Valid / Untrusted   ⇒ untrusted_signer  (crypto-valid, no trust)
     if not manifest_found:
         status = ProvenanceStatus.ABSENT
+        validation_passed = None
+        signer_trusted = None
     elif validation_passed is False:
         status = ProvenanceStatus.INVALID_OR_TAMPERED
-    elif signer_trusted is False and validation_passed is True:
-        status = ProvenanceStatus.UNTRUSTED_SIGNER
-    else:
+    elif validation_passed is None:
+        # We opened a manifest but the library gave us no determinable
+        # validation state — surface as ERROR, keep validation_passed
+        # and signer_trusted both None.
+        status = ProvenanceStatus.ERROR
+    elif signer_trusted is True:
         status = ProvenanceStatus.VALID
+    else:  # validation_passed is True, signer_trusted is False
+        status = ProvenanceStatus.UNTRUSTED_SIGNER
 
     origin: OriginClaim = manifest_data["origin_claim"]
 
@@ -513,10 +592,11 @@ def _read_provenance(reader) -> ProvenanceResult:
     return ProvenanceResult(
         status=status,
         manifest_found=manifest_found,
-        validation_passed=validation_passed if manifest_found else None,
-        signer_trusted=signer_trusted if manifest_found else None,
+        validation_passed=validation_passed,
+        signer_trusted=signer_trusted,
         validation_state=validation_state,
-        validation_errors=errors,
+        validation_errors=failures,
+        validation_warnings=warnings,
         origin_claim=origin,
         has_ai_generation_assertion=has_ai_gen,
         has_ai_manipulation_assertion=has_ai_mod,

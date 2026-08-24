@@ -34,6 +34,7 @@ from src.genai_detection.integration_pipeline.fusion import (
 )
 from src.genai_detection.watermark_module import TrustMarkDetector, TrustMarkStatus
 from src.genai_detection.hash_module import (
+    HashLookupResult,
     HashLookupStatus,
     HashRegistry,
     load_registry as load_hash_registry,
@@ -109,9 +110,11 @@ class PipelineRequestHandler(BaseHTTPRequestHandler):
                 # Deliberately kept off the fusion path — see run_analysis_pipeline
                 # docstring and CLAUDE.md's fusion-formula rule.
                 watermark_detector = getattr(self.server, "watermark_detector", None)
-                # Hash registry is optional and text-only; a missing or
-                # unset registry surfaces via the hash card as
-                # REGISTRY_UNAVAILABLE, never as "no match".
+                # Hash registry may be a live HashRegistry, a typed
+                # HashLookupResult sentinel (startup failure — the
+                # sentinel preserves REGISTRY_UNAVAILABLE vs
+                # INVALID_REGISTRY and its diagnostic details), or
+                # None. Every branch surfaces the digest in the response.
                 hash_registry = getattr(self.server, "hash_registry", None)
 
                 result = run_analysis_pipeline(
@@ -260,8 +263,23 @@ def _build_watermark_payload(watermark_detector, file_data: bytes) -> dict[str, 
     }
 
 
+def _hash_result_to_dict(result: HashLookupResult) -> dict[str, object]:
+    return {
+        "scheme": result.scheme,
+        "sha256": result.sha256,
+        "status": result.status.value,
+        "registry_available": result.registry_available,
+        "registry_path": result.registry_path,
+        "registry_entry_count": result.registry_entry_count,
+        "match": result.match.model_dump(exclude_none=True) if result.match else None,
+        "rationale": result.rationale,
+        "error_details": result.error_details,
+        "scope_statement": result.scope_statement,
+    }
+
+
 def _build_hash_payload(
-    hash_registry: HashRegistry | None,
+    hash_registry: HashRegistry | HashLookupResult | None,
     file_data: bytes,
 ) -> dict[str, object]:
     """
@@ -272,19 +290,33 @@ def _build_hash_payload(
     PIL decode or re-encode — so the digest matches what a user would
     get by running ``sha256sum`` on the same file.
 
-    When no registry is attached we still return the digest and a
-    stable-shape dict with ``status=registry_unavailable``. A missing
-    registry is NOT the same as "no match"; the UI never renders a
-    "not AI-generated" message from a missing match.
-    """
-    from src.genai_detection.hash_module import (
-        SCHEME_NAME as _HASH_SCHEME,
-        SCOPE_STATEMENT as _HASH_SCOPE,
-    )
+    ``hash_registry`` may be:
 
+    * a live :class:`HashRegistry` — perform the lookup normally.
+    * a :class:`HashLookupResult` — a typed startup-failure sentinel
+      from :func:`load_registry` (either ``REGISTRY_UNAVAILABLE`` or
+      ``INVALID_REGISTRY``). The distinction MUST be preserved: an
+      invalid registry file is a data-quality problem the operator
+      should see, not a silent "unavailable" downgrade.
+    * ``None`` — no registry is attached to this backend build at all
+      → :attr:`HashLookupStatus.REGISTRY_UNAVAILABLE`.
+
+    Every branch always includes the uploaded file's SHA-256 digest in
+    the response so the operator can copy it from the UI.
+    """
     digest = sha256_bytes(file_data)
 
+    # Typed startup-failure sentinel from load_registry(). Preserve the
+    # original status (unavailable vs invalid) and the diagnostic
+    # ``error_details``; only fill in the digest for this upload.
+    if isinstance(hash_registry, HashLookupResult):
+        return _hash_result_to_dict(hash_registry.model_copy(update={"sha256": digest}))
+
     if hash_registry is None:
+        from src.genai_detection.hash_module import (
+            SCHEME_NAME as _HASH_SCHEME,
+            SCOPE_STATEMENT as _HASH_SCOPE,
+        )
         return {
             "scheme": _HASH_SCHEME,
             "sha256": digest,
@@ -305,6 +337,10 @@ def _build_hash_payload(
     try:
         result = hash_registry.lookup(digest)
     except Exception as exc:
+        from src.genai_detection.hash_module import (
+            SCHEME_NAME as _HASH_SCHEME,
+            SCOPE_STATEMENT as _HASH_SCOPE,
+        )
         traceback.print_exc()
         return {
             "scheme": _HASH_SCHEME,
@@ -319,18 +355,7 @@ def _build_hash_payload(
             "scope_statement": _HASH_SCOPE,
         }
 
-    return {
-        "scheme": result.scheme,
-        "sha256": result.sha256,
-        "status": result.status.value,
-        "registry_available": result.registry_available,
-        "registry_path": result.registry_path,
-        "registry_entry_count": result.registry_entry_count,
-        "match": result.match.model_dump(exclude_none=True) if result.match else None,
-        "rationale": result.rationale,
-        "error_details": result.error_details,
-        "scope_statement": result.scope_statement,
-    }
+    return _hash_result_to_dict(result)
 
 
 def _temp_suffix_for(filename: str | None) -> str:
@@ -520,8 +545,18 @@ def run_analysis_pipeline(
             "landmark_analysis": da.get("landmark_analysis") if da else None,
         }
     else:
-        verdict = f"Likely Real (confidence: {1 - fusion_result.ai_probability:.2%})"
-        verdict_type = "real"
+        # A fused-negative decision is INCONCLUSIVE, not "Likely Real".
+        # The framework has no positive signal that would prove camera
+        # or human origin; it just failed to accumulate enough evidence
+        # for AI. Reporting 1 - P(AI) as "real confidence" would let a
+        # missing-metadata + non-committal visual classifier read as
+        # authenticity, which is exactly the failure mode PROJECT.md's
+        # "neutral-on-missing metadata" rule exists to prevent.
+        verdict = (
+            f"No supported AI-origin signal detected — inconclusive "
+            f"(fused P(AI) = {fusion_result.ai_probability:.2%})."
+        )
+        verdict_type = "inconclusive"
 
     meta_features = meta_result.features
     meta_features_dict = {
@@ -742,17 +777,20 @@ if __name__ == "__main__":
     watermark_model = TrustMarkDetector()
 
     # Attach the hash registry, if configured. load_hash_registry returns
-    # either a live HashRegistry or a failure result object — we keep
-    # only the live one; the failure surfaces through the Hash Evidence
-    # card at request time (never as a startup crash).
+    # either a live HashRegistry or a typed HashLookupResult describing
+    # the failure (REGISTRY_UNAVAILABLE vs INVALID_REGISTRY). The typed
+    # sentinel is forwarded intact so /api/analyse can report the exact
+    # failure mode with its diagnostic details — dropping it to None
+    # would collapse "malformed registry" down to "no registry", which
+    # hides a real operator problem.
     loaded_hash_registry = load_hash_registry()
-    hash_registry = loaded_hash_registry if isinstance(loaded_hash_registry, HashRegistry) else None
-    if hash_registry is not None:
-        print(f"Hash registry loaded: {hash_registry.path} ({len(hash_registry)} records).")
+    hash_registry = loaded_hash_registry  # HashRegistry OR HashLookupResult
+    if isinstance(loaded_hash_registry, HashRegistry):
+        print(f"Hash registry loaded: {loaded_hash_registry.path} ({len(loaded_hash_registry)} records).")
     else:
         print(
-            "Hash registry unavailable — Hash Evidence card will report "
-            "registry_unavailable for every upload."
+            f"Hash registry load failed → {loaded_hash_registry.status.value}: "
+            f"{loaded_hash_registry.error_details}"
         )
 
     server, url = create_server(

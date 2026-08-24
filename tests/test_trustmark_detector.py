@@ -67,7 +67,7 @@ class _FakeTrustMark:
 
     def __init__(self, model_type="Q", device="", verbose=False, **kwargs):
         _FakeTrustMark.init_calls.append(
-            {"model_type": model_type, "device": device, "verbose": verbose}
+            {"model_type": model_type, "device": device, "verbose": verbose, **kwargs}
         )
         if _FakeTrustMark.raise_on_init:
             raise RuntimeError("simulated weight download failure")
@@ -157,6 +157,25 @@ class TestConstructor:
     def test_unsupported_default_variant_rejected(self):
         with pytest.raises(ValueError, match="Unsupported default TrustMark variant"):
             TrustMarkDetector(default_variant="Z")
+
+    def test_default_device_is_cpu(self, fake_trustmark):
+        """Default `device=""` upstream means "pick — CUDA if available";
+        the wrapper must default to CPU to keep the demo reproducible
+        on any box."""
+        det = TrustMarkDetector()
+        assert det.device == "cpu"
+        det.analyse(_tiny_png_bytes())
+        assert fake_trustmark.init_calls[0]["device"] == "cpu"
+
+    def test_disables_unused_remover_and_bbox_components(self, fake_trustmark):
+        """The wrapper only decodes watermarks. The upstream
+        `loadRemover` and `loadBBoxDetector` flags MUST be turned off
+        so the associated model files never need to be downloaded."""
+        det = TrustMarkDetector()
+        det.analyse(_tiny_png_bytes())
+        call = fake_trustmark.init_calls[0]
+        assert call.get("loadRemover") is False
+        assert call.get("loadBBoxDetector") is False
 
 
 # ---------------------------------------------------------------------------

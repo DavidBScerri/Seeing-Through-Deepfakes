@@ -19,13 +19,13 @@ python src/genai_detection/visual_module/build_combined_dataset.py     # (re)bui
 python -m src.genai_detection.visual_module.build_commfor_eval_index   # (re)scan CF eval shard index — committed, rarely needed
 ```
 
-There is no build, lint, or test command. Tests don't exist yet (GAPS.md #3 specifies the intended pytest layout under `tests/`). Training and evaluation run through notebooks: `visual_classifier_finetuning.ipynb` (edit the config cell, run), `*_eval.ipynb` per module, `integration_pipeline/bulk_evaluation.ipynb` for end-to-end runs over `data/sample_images/`.
+Tests live under `tests/` — run with `python -m pytest tests/`. Training and evaluation run through notebooks: `visual_classifier_finetuning.ipynb` (edit the config cell, run), `*_eval.ipynb` per module, `integration_pipeline/bulk_evaluation.ipynb` for end-to-end runs over `data/sample_images/`.
 
 **The repo path contains spaces (iCloud Drive) — always quote paths in shell commands.**
 
 ## Conventions
 
-- Layout: generative-AI evidence streams live under `src/genai_detection/` (`metadata_module`, `visual_module`, `integration_pipeline`, plus the stub packages `watermark_module`, `hash_module`, `evaluation` reserved for later work). The conditional deepfake stage lives at `src/deepfake_detection/` (moved from the old `src/deepfake_module/`, no nesting under `genai_detection`). The web frontend (`index.html`) lives outside `src/` at `web/index.html`; the backend (`app.py`) stays with the integration pipeline. Reusable logic in `.py` modules; notebooks only orchestrate and display. Each package re-exports its public API in `__init__.py`. Use `from src import PROJECT_ROOT` for repo-root paths — do not hand-count `parents[N]`.
+- Layout: generative-AI evidence streams live under `src/genai_detection/` (`metadata_module`, `visual_module`, `integration_pipeline`, `watermark_module` (Adobe TrustMark), `hash_module` (SHA-256 byte-exact registry), plus the `evaluation` stub reserved for Prompt 5's robustness harness). The conditional deepfake stage lives at `src/deepfake_detection/` (moved from the old `src/deepfake_module/`, no nesting under `genai_detection`). The web frontend (`index.html`) lives outside `src/` at `web/index.html`; the backend (`app.py`) stays with the integration pipeline. Reusable logic in `.py` modules; notebooks only orchestrate and display. Each package re-exports its public API in `__init__.py`. Use `from src import PROJECT_ROOT` for repo-root paths — do not hand-count `parents[N]`.
 - Run artefacts go to the module's `outputs/` dir, named `{run_name}_{what}.{json|png|csv}`. Run names follow `run_NN_<description>` (e.g. `run_01_stage2A_ft_combined`).
 - British English identifiers: `analyse_image`, `initialise_index`, "Visualisation".
 - Module outputs are dicts/Pydantic models carrying `probability` + `rationale`/`explanation` — every signal must expose a probability AND a reason, never a bare boolean. This is a thesis requirement (Article 50 explainability), not style.
@@ -34,7 +34,7 @@ There is no build, lint, or test command. Tests don't exist yet (GAPS.md #3 spec
 
 ## Gotchas
 
-- **The canonical base model is `dima806/ai_vs_real_image_detection` everywhere** (David, 2026-07-19), paired with the `run_01_stage2A` delta. The other repo (`ai_vs_human_generated_image_detection`) only survives inside the run_02–04 delta checkpoints. `load_weight_delta` now RAISES on a base mismatch (`force=True` to override); `app.py` derives the base from the delta via `get_delta_base_model`.
+- **The deployed canonical visual backbone is `OwensLab/commfor-model-384`** (David, 2026-08-12); the fine-tuned ViT on `dima806/ai_vs_real_image_detection` paired with `run_01_stage2A` survives as a HISTORICAL / comparison model in `visual_module/`, not the deployed classifier. The other repo (`ai_vs_human_generated_image_detection`) only survives inside the run_02–04 delta checkpoints. `load_weight_delta` now RAISES on a base mismatch (`force=True` to override); `app.py` derives the base from the delta via `get_delta_base_model`.
 - **The canonical fused decision threshold is 0.55** (David, 2026-07-19), set in `src/genai_detection/integration_pipeline/config.py` and the notebook config cells. The report's printed 0.5 predates this; historic 0.25/0.45 values were testing artefacts from the mispaired-model era. Don't change it without David.
 - `gradcam_*_analysis.py` files implement **occlusion saliency**, not Grad-CAM. `gradcam_landmark_analysis.py` uses the same package-style import + `sys.path` bootstrap as `app.py`, so it works both as `src.deepfake_detection.gradcam_landmark_analysis` and standalone / via `%run`.
 - `DeepfakeClassifier.predict()` without a `visual_classifier` arg always runs the analysis (its internal gate is a no-op); the real proportionality gate is `fusion_result.is_ai` in `app.py`.

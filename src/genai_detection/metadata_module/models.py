@@ -145,8 +145,21 @@ class ProvenanceResult(BaseModel):
     Kept verbatim for debugging."""
 
     validation_errors: list[str] = Field(default_factory=list)
-    """Human-readable validation error/warning codes surfaced by the C2PA
-    library. Empty on a clean validation."""
+    """Human-readable HARD failure codes surfaced by the C2PA library
+    (bad hash, bad signature, missing assertion). These invalidate the
+    manifest. Empty on a clean validation.
+
+    Warnings / informational entries are kept separately on
+    :attr:`validation_warnings` — the two must not be conflated, so an
+    informational entry alone never invalidates a cryptographically
+    valid manifest.
+    """
+
+    validation_warnings: list[str] = Field(default_factory=list)
+    """Informational codes surfaced by the C2PA library that are NOT
+    hard validation failures. Empty by default; kept separate from
+    :attr:`validation_errors` so a warning on a valid manifest is never
+    reported as invalidity."""
 
     origin_claim: OriginClaim = OriginClaim.UNSPECIFIED
     """Origin interpretation derived from ``c2pa.actions`` +

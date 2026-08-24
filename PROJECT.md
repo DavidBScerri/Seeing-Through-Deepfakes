@@ -2,9 +2,9 @@
 
 ## What this is
 
-A proof-of-concept **AI-image / deepfake detection pipeline** built by David Scerri for his M.Sc. dissertation *"Seeing Through Deepfakes"* (developed during a work placement with the Malta Digital Innovation Authority, extended for the thesis). It takes a single image and produces a **decision-support verdict** — `Likely Real`, `Likely AI Generated`, or `Potential Deepfake` — with a probability and a human-readable explanation for every contributing signal.
+A proof-of-concept **AI-image / deepfake detection pipeline** built by David Scerri for his M.Sc. dissertation *"Seeing Through Deepfakes"* (developed during a work placement with the Malta Digital Innovation Authority, extended for the thesis). It takes a single image and produces a **decision-support verdict** — `Inconclusive` (fused probability below the decision threshold — a negative result is NOT proof of camera or human origin), `Likely AI Generated`, or `Potential Deepfake` — with a probability and a human-readable explanation for every contributing signal. Historical evaluation runs (Annex II of the placement report) used the earlier `Likely Real` label — retained in those historical results only as period terminology, no longer emitted by the current pipeline.
 
-Crucially, this is not "just a classifier." The thesis argument is regulatory: the EU AI Act **Article 50(2)** requires generative AI outputs to be detectable through machine-readable means, and the **Draft Code of Practice on Transparency of AI-Generated Content** operationalises that via *layered* transparency signals (provenance metadata, watermarking, model-based detection). The pipeline mirrors that layering: several imperfect evidence streams are **fused**, none is authoritative, and every module exposes a probability + rationale rather than a binary verdict. The Art. 3(60) deepfake definition covers *persons, objects, places, entities or events* — which is why the deepfake stage checks for both faces **and** landmark/place resemblance, not just faces.
+Crucially, this is not "just a classifier." The thesis argument is regulatory: the EU AI Act **Article 50(2)** requires generative AI outputs to be detectable through machine-readable means. Layered transparency (provenance metadata, watermarking, model-based detection) was previously discussed under the Draft Code of Practice on Transparency of AI-Generated Content — the current legal / regulatory instruments (including the version and status of that Code) evolve, and any reference to a specific draft belongs in the thesis's discussion section rather than as a live description of settled law. The pipeline mirrors that layering pragmatically: several imperfect evidence streams are combined — the two that currently feed **fusion** (`P(AI)_m`, `P(AI)_v*`) and separate structured evidence objects (C2PA provenance, TrustMark watermark, SHA-256 registry) that report standalone — none is authoritative, and every module exposes a probability + rationale rather than a binary verdict. The Art. 3(60) deepfake definition covers *persons, objects, places, entities or events* — which is why the deepfake stage checks for both faces **and** landmark/place resemblance, not just faces.
 
 The audience is David (sole developer), thesis examiners, and demo viewers. It is research code: single-user, localhost-only, no deployment story — but the *formulas and thresholds are the scientific contribution*, so correctness of the fusion math matters more than typical prototype code.
 
@@ -22,7 +22,7 @@ The audience is David (sole developer), thesis examiners, and demo viewers. It i
 | `http.server` stdlib + one 1,900-line `index.html` | Demo web UI | Deliberately zero web-framework dependencies; single-file dark-themed SPA |
 | Jupyter notebooks | Training, evaluation, demos | The interactive "workbench" pattern — notebooks orchestrate, `.py` files hold reusable logic |
 
-There are **no tests, no linter config, no CI, no packaging** (no `pyproject.toml`). `requirements.txt` is only approximately accurate (see GAPS.md).
+Tests live under `tests/` and run with `python -m pytest tests/` (208 tests as of this pass, covering fusion strategies, metadata scoring, C2PA provenance validation, TrustMark, SHA-256 hash registry, weight-delta round-tripping, website plumbing and package layout). No linter config, no CI, no packaging (no `pyproject.toml`) yet.
 
 ## Architecture
 
@@ -50,7 +50,7 @@ There are **no tests, no linter config, no CI, no packaging** (no `pyproject.tom
               is_deepfake = has_face OR has_place
                        │
                        ▼
-     Verdict: "Likely Real" | "Likely AI Generated" | "Potential Deepfake"
+     Verdict: "Inconclusive" | "Likely AI Generated" | "Potential Deepfake"
              + per-module probabilities, rationale, saliency heatmaps
 ```
 
@@ -102,7 +102,7 @@ From the work placement report §3.4 — do not approximate:
 
 ## Surprises / things that will trip you up
 
-- **The canonical base model is `dima806/ai_vs_real_image_detection`** (David, 2026-07-19) — used by `visual_classifier.py`/`training.py` defaults, both pipeline entry points, and the run_01 deltas (`run_01_stage2A` is the report's Stage-2 model). The run_02–04 deltas were trained on the *other* repo (`ai_vs_human_generated_image_detection`) and only load on that base; `load_weight_delta` raises on mismatch and `get_delta_base_model` reads the recorded base.
+- **The deployed canonical visual backbone is `OwensLab/commfor-model-384`** (David, 2026-08-12). The fine-tuned ViT on `dima806/ai_vs_real_image_detection` paired with `run_01_stage2A` is retained as a HISTORICAL / comparison model — used by `visual_classifier.py`/`training.py` defaults, the visual-module notebooks, and referenced by `run_01_stage2A` (the report's Stage-2 model). The run_02–04 deltas were trained on the *other* repo (`ai_vs_human_generated_image_detection`) and only load on that base; `load_weight_delta` raises on mismatch and `get_delta_base_model` reads the recorded base.
 - **"gradcam" files contain no Grad-CAM** — occlusion saliency replaced Grad-CAM in `b4b11ef`; filenames were kept.
 - **The canonical fused decision threshold is 0.55** (David, 2026-07-19; centralised in `src/genai_detection/integration_pipeline/config.py`). The report's printed 0.5 predates this decision; the old 0.25 (app) / 0.45 (bulk notebook) were testing values from the mispaired-model era.
 - **`DeepfakeClassifier.predict()`'s internal visual gating is a no-op** as called from `app.py`: without a `visual_classifier` arg, `ai_score = threshold`, so the gate always passes. The real gate is fusion's `is_ai` in the caller.

@@ -11,14 +11,16 @@ Optional integration test: if the environment provides an official,
 small, legally-reusable C2PA sample image via
 ``C2PA_TEST_ASSET_PATH``, one end-to-end validation is run against
 the real library. The test is skipped when the variable is unset or
-the file is missing — no large binary is checked in.
+the file is missing — no large binary is committed. Attribution for
+the asset is the responsibility of whoever supplies the path (see
+https://github.com/contentauth/c2pa-python for the public sample
+library and its license).
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,9 +34,6 @@ from src.genai_detection.metadata_module import provenance_validation as pv
 
 
 # ─── Fake exception classes ────────────────────────────────────────────────
-# The real library raises typed subclasses of ``C2paError`` whose names
-# encode the failure mode. The validator matches by NAME, so bare
-# stand-ins work here without importing the native module.
 
 class _FakeManifestNotFound(Exception):
     pass
@@ -54,9 +53,6 @@ _FakeSignatureError.__name__ = "_C2paSignature"
 # ─── Fake Reader ────────────────────────────────────────────────────────────
 
 class _FakeReader:
-    """Minimal duck-type for c2pa.Reader — only the methods the
-    validator calls need to exist."""
-
     def __init__(self, *, active=None, state=None, results=None, raw_json=None):
         self._active = active
         self._state = state
@@ -82,25 +78,37 @@ class _FakeReader:
 
 @pytest.fixture
 def fake_image(tmp_path: Path) -> Path:
-    """A trivial byte-file — the validator only needs the path to exist,
-    the reader factory is mocked."""
     path = tmp_path / "asset.png"
     path.write_bytes(b"not really a png")
     return path
 
 
-# ─── Status coverage ───────────────────────────────────────────────────────
+# ─── Reusable assertion / action builders ──────────────────────────────────
+
+def _actions_manifest(*, dst: str | None = None, action: str = "c2pa.created",
+                       claim_generator: str | None = None) -> dict:
+    actions = [{"action": action}]
+    if dst is not None:
+        actions[0]["digitalSourceType"] = dst
+    manifest: dict = {
+        "assertions": [
+            {"label": "c2pa.actions.v2", "data": {"actions": actions}},
+        ],
+    }
+    if claim_generator is not None:
+        manifest["claim_generator"] = claim_generator
+    return manifest
+
+
+# ─── Validator availability ────────────────────────────────────────────────
 
 class TestValidatorUnavailable:
     def test_returns_validator_unavailable_when_lib_missing(self, fake_image, monkeypatch):
-        # Simulate the library not being importable.
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", False)
         monkeypatch.setattr(pv, "_C2PA_IMPORT_ERROR", "ImportError: no module named c2pa")
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.VALIDATOR_UNAVAILABLE
         assert result.manifest_found is False
-        # Rationale must NOT read as "no C2PA found" — that's a separate
-        # status (ABSENT).
         assert "not installed" in result.rationale.lower() or "unavailable" in result.rationale.lower()
         assert "no manifest" not in result.rationale.lower()
 
@@ -115,7 +123,6 @@ class TestValidatorUnavailable:
 
         assert unavailable.status is ProvenanceStatus.VALIDATOR_UNAVAILABLE
         assert absent.status is ProvenanceStatus.ABSENT
-        assert unavailable.status is not absent.status
 
 
 class TestAbsent:
@@ -128,10 +135,8 @@ class TestAbsent:
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.ABSENT
         assert result.manifest_found is False
-        # Absence must never READ AS an assertion of authenticity —
-        # the word "authentic" may appear inside "does not mean the
-        # image is authentic", which is fine, but a bare "authentic"
-        # is not.
+        assert result.validation_passed is None
+        assert result.signer_trusted is None
         r = result.rationale.lower()
         assert "does not mean" in r or "inconclusive" in r
         assert "likely real" not in r
@@ -148,7 +153,9 @@ class TestUnsupportedFormat:
         assert result.status is ProvenanceStatus.UNSUPPORTED_FORMAT
 
 
-class TestInvalidOrTampered:
+# ─── Validation-state semantics: Invalid / Valid / Trusted / Untrusted ─────
+
+class TestInvalid:
     def test_signature_error_at_open_time(self, fake_image, monkeypatch):
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
         monkeypatch.setattr(
@@ -158,43 +165,99 @@ class TestInvalidOrTampered:
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.INVALID_OR_TAMPERED
         assert result.validation_passed is False
+        assert result.signer_trusted is None
 
     def test_invalid_state_after_open(self, fake_image, monkeypatch):
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
-        active = {
-            "claim_generator": "Adobe_Photoshop/25.0",
-            "assertions": [],
-        }
-        reader = _FakeReader(active=active, state="Invalid")
+        reader = _FakeReader(active=_actions_manifest(dst=None), state="Invalid")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.INVALID_OR_TAMPERED
         assert result.manifest_found is True
         assert result.validation_passed is False
+        assert result.signer_trusted is None
 
 
-class TestUntrustedSigner:
-    def test_untrusted_state_maps_to_untrusted_signer(self, fake_image, monkeypatch):
+class TestValidVsTrusted:
+    """The critical semantic split: `Valid` = crypto-valid but signer not
+    established; `Trusted` = valid AND signer chains to a trust anchor.
+    Older library versions also produce `Untrusted` — same meaning as
+    `Valid`."""
+
+    def test_valid_state_maps_to_untrusted_signer(self, fake_image, monkeypatch):
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
-        active = {
-            "claim_generator": "Some Tool/1.0",
-            "assertions": [
-                {
-                    "label": "c2pa.actions.v2",
-                    "data": {"actions": [
-                        {"action": "c2pa.created",
-                         "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture"},
-                    ]},
-                },
-            ],
-        }
+        active = _actions_manifest(
+            dst="http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture",
+        )
+        reader = _FakeReader(active=active, state="Valid")
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.status is ProvenanceStatus.UNTRUSTED_SIGNER, (
+            "'Valid' means crypto-valid without trust — must NOT map to VALID"
+        )
+        assert result.validation_passed is True
+        assert result.signer_trusted is False
+        r = result.rationale.lower()
+        assert "trust" in r
+        # Must not read as a validation failure.
+        assert "validation failed" not in r
+        assert "appears altered" not in r
+
+    def test_untrusted_legacy_state_matches_valid(self, fake_image, monkeypatch):
+        """Older library versions surface `Untrusted` for what newer
+        versions call `Valid`. Both must yield the same result."""
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        active = _actions_manifest(
+            dst="http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture",
+        )
         reader = _FakeReader(active=active, state="Untrusted")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.UNTRUSTED_SIGNER
-        assert result.signer_trusted is False
         assert result.validation_passed is True
+        assert result.signer_trusted is False
 
+    def test_trusted_state_maps_to_valid_with_signer_trusted(self, fake_image, monkeypatch):
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        active = _actions_manifest(
+            dst="http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture",
+        )
+        reader = _FakeReader(active=active, state="Trusted")
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.status is ProvenanceStatus.VALID
+        assert result.validation_passed is True
+        assert result.signer_trusted is True
+
+
+class TestUnknownValidationState:
+    def test_none_state_becomes_error_not_valid(self, fake_image, monkeypatch):
+        """A manifest with no reported validation state must NOT be
+        classified as valid — Python truthiness on ``None`` must not
+        become 'signer not in trust list'."""
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        reader = _FakeReader(active=_actions_manifest(), state=None)
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.status is ProvenanceStatus.ERROR
+        assert result.validation_passed is None
+        assert result.signer_trusted is None
+        # And critically, rationale must not read as a valid manifest.
+        assert "cannot be reported as valid" in result.rationale.lower() or \
+               "not be determined" in result.rationale.lower() or \
+               "no recognised" in result.rationale.lower()
+
+    def test_unknown_state_string_becomes_error(self, fake_image, monkeypatch):
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        reader = _FakeReader(active=_actions_manifest(), state="Purple")
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.status is ProvenanceStatus.ERROR
+        assert result.validation_passed is None
+        assert result.signer_trusted is None
+
+
+# ─── AI / non-AI origin (with Trusted state so status stays VALID) ─────────
 
 class TestValidAiOrigin:
     def test_ai_generated_origin_detected(self, fake_image, monkeypatch):
@@ -215,15 +278,14 @@ class TestValidAiOrigin:
                 },
             ],
         }
-        reader = _FakeReader(active=active, state="Valid")
+        reader = _FakeReader(active=active, state="Trusted")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.VALID
+        assert result.signer_trusted is True
         assert result.origin_claim is OriginClaim.AI_GENERATED
         assert result.has_ai_generation_assertion is True
         assert result.has_ai_manipulation_assertion is False
-        # Manifest-level ``claim_generator`` is a bare string — we keep
-        # it verbatim rather than reformatting.
         assert result.claim_generator == "OpenAI/dall-e-3"
         assert "OpenAI dall-e-3" in result.software_agents
         assert "c2pa.created" in result.actions
@@ -232,18 +294,11 @@ class TestValidAiOrigin:
 
     def test_ai_modified_origin_detected(self, fake_image, monkeypatch):
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
-        active = {
-            "assertions": [
-                {
-                    "label": "c2pa.actions",
-                    "data": {"actions": [
-                        {"action": "c2pa.color_adjustments",
-                         "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"},
-                    ]},
-                },
-            ],
-        }
-        reader = _FakeReader(active=active, state="Valid")
+        active = _actions_manifest(
+            action="c2pa.edited",
+            dst="http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia",
+        )
+        reader = _FakeReader(active=active, state="Trusted")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.VALID
@@ -253,28 +308,19 @@ class TestValidAiOrigin:
 
 
 class TestValidNonAiOrigin:
-    def test_camera_capture_is_not_an_ai_claim(self, fake_image, monkeypatch):
+    @pytest.mark.parametrize("short_type", sorted(pv._CAMERA_HUMAN_TYPES))
+    def test_camera_or_human_types_do_not_assert_ai(self, short_type, fake_image, monkeypatch):
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
-        active = {
-            "claim_generator": "Sony_A7R/1.0",
-            "assertions": [
-                {
-                    "label": "c2pa.actions",
-                    "data": {"actions": [
-                        {"action": "c2pa.created",
-                         "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture"},
-                    ]},
-                },
-            ],
-        }
-        reader = _FakeReader(active=active, state="Valid")
+        active = _actions_manifest(
+            dst=f"http://cv.iptc.org/newscodes/digitalsourcetype/{short_type}",
+        )
+        reader = _FakeReader(active=active, state="Trusted")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.VALID
         assert result.origin_claim is OriginClaim.CAMERA_OR_HUMAN_ORIGIN
         assert result.has_ai_generation_assertion is False
         assert result.has_ai_manipulation_assertion is False
-        assert "camera capture" in result.rationale.lower() or "human-only" in result.rationale.lower()
 
     def test_valid_manifest_without_source_type_is_unspecified(self, fake_image, monkeypatch):
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
@@ -283,12 +329,50 @@ class TestValidNonAiOrigin:
                 {"label": "c2pa.actions", "data": {"actions": [{"action": "c2pa.opened"}]}},
             ],
         }
-        reader = _FakeReader(active=active, state="Valid")
+        reader = _FakeReader(active=active, state="Trusted")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.VALID
         assert result.origin_claim is OriginClaim.UNSPECIFIED
         assert "without an ai-generation claim" in result.rationale.lower()
+
+
+class TestAmbiguousIptcTypes:
+    """Values that DESCRIBE how media was produced/rendered but do not
+    necessarily involve trained/generative AI. Recording them is fine;
+    they must never set the AI-generation / AI-manipulation assertions."""
+
+    @pytest.mark.parametrize(
+        "short_type",
+        sorted(pv._AMBIGUOUS_TYPES),
+    )
+    def test_ambiguous_type_stays_unspecified(self, short_type, fake_image, monkeypatch):
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        active = _actions_manifest(
+            dst=f"http://cv.iptc.org/newscodes/digitalsourcetype/{short_type}",
+        )
+        reader = _FakeReader(active=active, state="Trusted")
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.origin_claim is OriginClaim.UNSPECIFIED, (
+            f"Ambiguous IPTC type '{short_type}' must not classify as AI-generated / AI-modified."
+        )
+        assert result.has_ai_generation_assertion is False
+        assert result.has_ai_manipulation_assertion is False
+        # But the raw value is still preserved for auditability.
+        assert any(short_type in d for d in result.digital_source_types)
+
+    def test_unknown_type_stays_unspecified(self, fake_image, monkeypatch):
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        active = _actions_manifest(
+            dst="http://cv.iptc.org/newscodes/digitalsourcetype/somebrandnewthing",
+        )
+        reader = _FakeReader(active=active, state="Trusted")
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.origin_claim is OriginClaim.UNSPECIFIED
+        assert result.has_ai_generation_assertion is False
+        assert result.has_ai_manipulation_assertion is False
 
 
 class TestConflictingOrigin:
@@ -307,13 +391,50 @@ class TestConflictingOrigin:
                 },
             ],
         }
-        reader = _FakeReader(active=active, state="Valid")
+        reader = _FakeReader(active=active, state="Trusted")
         monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
         result = validate_provenance(fake_image)
         assert result.status is ProvenanceStatus.VALID
         assert result.origin_claim is OriginClaim.CONFLICTING
-        # Both AI and camera assertions must still be surfaced.
         assert result.has_ai_generation_assertion is True
+
+
+# ─── Warnings / failures split ─────────────────────────────────────────────
+
+class TestFailuresVsWarnings:
+    def test_failure_entries_surfaced_and_invalidate(self, fake_image, monkeypatch):
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        results = {
+            "activeManifest": {
+                "failure": [
+                    {"code": "assertion.hashedURI.mismatch", "explanation": "hash did not match"},
+                ],
+                "success": [{"code": "signingCredential.trusted"}],
+            }
+        }
+        reader = _FakeReader(active=_actions_manifest(), state="Trusted", results=results)
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        # A hard failure MUST invalidate even a "Trusted" state.
+        assert result.status is ProvenanceStatus.INVALID_OR_TAMPERED
+        assert any("hashedURI.mismatch" in e for e in result.validation_errors)
+
+    def test_informational_warnings_do_not_invalidate(self, fake_image, monkeypatch):
+        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
+        results = {
+            "activeManifest": {
+                "failure": [],
+                "informational": [
+                    {"code": "manifest.warning", "explanation": "an informational note"},
+                ],
+            }
+        }
+        reader = _FakeReader(active=_actions_manifest(), state="Trusted", results=results)
+        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
+        result = validate_provenance(fake_image)
+        assert result.status is ProvenanceStatus.VALID
+        assert result.validation_errors == []
+        assert any("manifest.warning" in w for w in result.validation_warnings)
 
 
 class TestErrorHandling:
@@ -334,25 +455,6 @@ class TestErrorHandling:
         assert result.status is ProvenanceStatus.ERROR
 
 
-class TestValidationErrorHarvesting:
-    def test_failure_entries_surfaced(self, fake_image, monkeypatch):
-        monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
-        active = {"assertions": []}
-        results = {
-            "activeManifest": {
-                "failure": [
-                    {"code": "assertion.hashedURI.mismatch", "explanation": "hash did not match"},
-                ],
-                "success": [{"code": "signingCredential.trusted"}],
-            }
-        }
-        reader = _FakeReader(active=active, state="Invalid", results=results)
-        monkeypatch.setattr(pv, "_open_reader", lambda p: reader)
-        result = validate_provenance(fake_image)
-        assert result.status is ProvenanceStatus.INVALID_OR_TAMPERED
-        assert any("hashedURI.mismatch" in e for e in result.validation_errors)
-
-
 # ─── Analyse_image integration ─────────────────────────────────────────────
 
 class TestAnalyseImageIntegration:
@@ -362,9 +464,7 @@ class TestAnalyseImageIntegration:
         from src.genai_detection.metadata_module import analyse_image
         from src.genai_detection.metadata_module import metadata_extraction as me
 
-        # ExifTool may not be installed in CI; short-circuit it.
         monkeypatch.setattr(me, "run_exiftool", lambda p: (_ for _ in ()).throw(RuntimeError("no exiftool")))
-        # Force validator to a valid AI result via the module-level factory.
         monkeypatch.setattr(pv, "_C2PA_AVAILABLE", True)
         active = {
             "assertions": [
@@ -374,10 +474,11 @@ class TestAnalyseImageIntegration:
                 ]}},
             ],
         }
-        monkeypatch.setattr(pv, "_open_reader", lambda p: _FakeReader(active=active, state="Valid"))
+        monkeypatch.setattr(pv, "_open_reader", lambda p: _FakeReader(active=active, state="Trusted"))
 
         result = analyse_image(str(fake_image))
         assert result.provenance.status is ProvenanceStatus.VALID
+        assert result.provenance.signer_trusted is True
         assert result.provenance.origin_claim is OriginClaim.AI_GENERATED
         # And critically, missing EXIF keeps the heuristic P(AI) at 0.5:
         assert result.ai_probability == pytest.approx(0.50)
@@ -387,16 +488,6 @@ class TestAnalyseImageIntegration:
 
 @pytest.mark.integration
 def test_real_library_end_to_end_on_optional_asset():
-    """
-    End-to-end sanity check against the real ``c2pa-python`` library on
-    an OFFICIAL C2PA sample asset provided via ``C2PA_TEST_ASSET_PATH``.
-
-    Skipped when the environment variable isn't set or the file is
-    missing — no large binary is committed. Attribution for the asset
-    is the responsibility of whoever supplies the path (see
-    https://github.com/contentauth/c2pa-python for the public sample
-    library and its license).
-    """
     asset = os.environ.get("C2PA_TEST_ASSET_PATH")
     if not asset:
         pytest.skip("C2PA_TEST_ASSET_PATH not set — skipping real-library test.")
@@ -406,6 +497,4 @@ def test_real_library_end_to_end_on_optional_asset():
 
     result = validate_provenance(path)
     assert isinstance(result, ProvenanceResult)
-    # The asset is either valid or, at worst, absent — never
-    # validator_unavailable if we got this far.
     assert result.status is not ProvenanceStatus.VALIDATOR_UNAVAILABLE

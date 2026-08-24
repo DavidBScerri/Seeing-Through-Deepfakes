@@ -143,9 +143,16 @@ SOFTWARE_KEYS = [
     "processingsoftware",
     "creatortool",
     "historysoftwareagent",
-    "claim_generator",
-    "created_software_agent",
 ]
+"""Tag names that name an editing / capture software agent.
+
+Deliberately excludes ``claim_generator`` and ``created_software_agent``
+— those identify C2PA provenance plumbing (the software that WROTE the
+provenance manifest, not the software that edited the pixels), and
+allowing them to inflate the software-tag count would let a signed
+camera or a Content-Credentials-enabled workflow trigger
+``suspicious_only_software_tags`` on its own.
+"""
 
 C2PA_KEYS = [
     "c2pa",
@@ -404,8 +411,15 @@ def build_features(flat: dict[str, str], binary_hits: list[str]) -> FeatureSet:
     has_camera_claim = has_make or has_model or has_lens_model or has_makernote
     has_edit_claim = "edited" in values or "photoshop" in values or "lightroom" in values
 
+    # Match software tags by the LAST dot-segment of the flattened key,
+    # exactly (not substring). Otherwise "created_software_agent"
+    # matches SOFTWARE_KEYS = ["software", ...] via the "software"
+    # substring and lets provenance plumbing indirectly inflate
+    # suspicious_only_software_tags — the very thing we removed
+    # claim_generator/created_software_agent from SOFTWARE_KEYS to avoid.
+    _software_key_set = set(SOFTWARE_KEYS)
     software_tag_count = sum(
-        1 for k in keys if any(tag in k for tag in SOFTWARE_KEYS)
+        1 for k in keys if k.rsplit(".", 1)[-1] in _software_key_set
     )
 
     suspicious_only_software_tags = (
@@ -436,6 +450,30 @@ def build_features(flat: dict[str, str], binary_hits: list[str]) -> FeatureSet:
     )
 
 
+#: Keywords that add heuristic evidence towards AI when present. Provenance-
+#: plumbing tags (c2pa, claim_generator, created_software_agent, manifest,
+#: content credentials) and ambiguous English words (synthetic) are
+#: excluded so they cannot indirectly push the score above 0.50 — those
+#: values stay visible in ``keyword_hits``/``binary_hits`` as descriptive
+#: findings but never contribute to ``P(AI)_m``.
+_SCORING_KEYWORDS: set[str] = set(EXPLICIT_AI_KEYWORDS) | set(AI_PROVIDER_KEYWORDS)
+
+
+def _scoring_keyword_hits(hits: list[str]) -> list[str]:
+    """Filter ``hits`` down to the tokens that actually feed the heuristic
+    score (explicit AI phrases + commercial provider names). Provenance
+    plumbing and ambiguous words are dropped from the numerator, not
+    from the descriptive ``keyword_hits`` list surfaced to the UI."""
+    return [h for h in hits if h in _SCORING_KEYWORDS]
+
+
+def _scoring_binary_hits(hits: list[str]) -> list[str]:
+    """Same filter as :func:`_scoring_keyword_hits` for the binary-marker
+    channel — a raw ``c2pa``/``claim_generator`` byte match must not
+    increase ``P(AI)_m``."""
+    return [h.lower() for h in hits if h.lower() in _SCORING_KEYWORDS]
+
+
 def score_features(features: FeatureSet) -> tuple[float, list[str]]:
     """
     Heuristic ``P(AI)`` from the raw metadata evidence.
@@ -443,13 +481,31 @@ def score_features(features: FeatureSet) -> tuple[float, list[str]]:
     Missing metadata → 0.50 (uncertain), by design. The score is capped
     to ``[0.01, 0.99]`` to keep it a probability.
 
-    Note: this scorer intentionally treats the raw ``has_c2pa_marker``
-    as *descriptive only* — a C2PA marker is not proof of AI generation
-    and adds 0 to the score. Cryptographically validated provenance is
-    surfaced separately on :class:`ProvenanceResult` and is not folded
-    into ``P(AI)_m`` in this task (see the task brief: "expose
-    provenance as a separate evidence object first and document the
-    limitation instead of inventing weights").
+    Fields that CAN change the score (each documented below):
+
+    * ``has_ai_claim``                       ``+0.35``
+    * ``keyword_hits`` (filtered to explicit + provider tokens)
+                                             ``+min(0.20, 0.03·N)``
+    * ``binary_hits``  (filtered to provider tokens)
+                                             ``+min(0.15, 0.03·N)``
+    * ``suspicious_only_software_tags``      ``+0.10``
+    * ``suspicious_perfect_timestamp``       ``+0.05``
+    * ≥3 camera-EXIF tags                    ``−0.20``
+    * exactly 2 camera-EXIF tags             ``−0.10``
+
+    Fields that are DESCRIPTIVE ONLY and add zero to the score:
+
+    * ``has_c2pa_marker`` — presence of a raw C2PA/Content-Credentials
+      tag or the ``c2pa`` byte sequence. A camera signing its own image
+      writes the same tag names.
+    * ``claim_generator`` / ``created_software_agent`` / ``manifest`` /
+      ``content credentials`` in text or binary hits.
+    * Ambiguous dictionary words in ``AMBIGUOUS_AI_HINTS`` (``synthetic``).
+
+    Cryptographically validated provenance is surfaced separately on
+    :class:`ProvenanceResult` and is deliberately NOT folded into
+    ``P(AI)_m`` in this iteration (see PROJECT.md and CLAUDE.md's
+    fusion-formula rule).
     """
 
     score = 0.50
@@ -465,19 +521,36 @@ def score_features(features: FeatureSet) -> tuple[float, list[str]]:
         # No score change: a C2PA marker is a raw indicator, not proof
         # of AI generation. See ProvenanceResult for validated status.
         rationale.append(
-            "C2PA/content-credentials marker present — descriptive only; verify with the provenance validator."
+            "C2PA/content-credentials marker present — descriptive only, scores zero; verify with the provenance validator."
         )
 
-    if features.keyword_hits:
-        score += min(0.20, 0.03 * len(features.keyword_hits))
+    scoring_kw = _scoring_keyword_hits(features.keyword_hits)
+    if scoring_kw:
+        score += min(0.20, 0.03 * len(scoring_kw))
         rationale.append(
-            f"AI/provenance keyword hits (heuristic, unverified): {', '.join(features.keyword_hits)}"
+            f"AI keyword hits (heuristic, unverified): {', '.join(scoring_kw)}"
+        )
+    # Provenance-plumbing or ambiguous hits that were dropped from the
+    # numerator are still surfaced descriptively — the UI/report can
+    # show them, they just add zero to the score.
+    descriptive_kw = [h for h in features.keyword_hits if h not in _SCORING_KEYWORDS]
+    if descriptive_kw:
+        rationale.append(
+            "Provenance-plumbing / ambiguous keyword hits (descriptive only, score unchanged): "
+            + ", ".join(descriptive_kw)
         )
 
-    if features.binary_hits:
-        score += min(0.15, 0.03 * len(features.binary_hits))
+    scoring_bin = _scoring_binary_hits(features.binary_hits)
+    if scoring_bin:
+        score += min(0.15, 0.03 * len(scoring_bin))
         rationale.append(
-            f"Binary marker hits (heuristic, unverified): {', '.join(features.binary_hits)}"
+            f"AI-provider binary marker hits (heuristic, unverified): {', '.join(scoring_bin)}"
+        )
+    descriptive_bin = [h for h in features.binary_hits if h.lower() not in _SCORING_KEYWORDS]
+    if descriptive_bin:
+        rationale.append(
+            "Provenance-plumbing binary marker hits (descriptive only, score unchanged): "
+            + ", ".join(descriptive_bin)
         )
 
     if features.suspicious_only_software_tags:

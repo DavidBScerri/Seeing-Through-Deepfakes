@@ -236,6 +236,132 @@ def test_post_analyse_returns_json_with_pipeline_shape(stub_server):
     assert "SHA-256" in hs["scope_statement"]
 
 
+def test_hash_registry_failure_states_are_preserved(monkeypatch, tmp_path):
+    """Task 5 regression: an invalid registry sentinel from
+    load_registry() must reach /api/analyse as ``invalid_registry`` and
+    a missing one as ``registry_unavailable`` — the two must never be
+    collapsed. The digest of the uploaded bytes is always populated
+    regardless of the registry failure mode."""
+    import numpy as np
+    from src.genai_detection.hash_module import (
+        HashLookupStatus,
+        invalid_result,
+        unavailable_result,
+    )
+
+    monkeypatch.setattr(
+        app_mod,
+        "compute_occlusion_saliency",
+        lambda detector, image, patch_size, stride: np.zeros(image.size[::-1], dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_overlay_heatmap",
+        lambda img_np, sal, alpha=0.5, cmap="hot": img_np.astype(np.float32) / 255.0,
+    )
+
+    file_bytes = _tiny_png_bytes()
+    expected_digest = sha256_bytes(file_bytes)
+
+    # 1) Invalid-registry sentinel — must survive intact through the
+    # response as INVALID_REGISTRY, with the operator-facing diagnostic
+    # preserved.
+    bad_path = tmp_path / "broken.json"
+    bad_path.write_text("{not valid")
+    invalid_sentinel = invalid_result(path=bad_path, reason="registry file is not valid JSON: at line 1")
+
+    result = app_mod.run_analysis_pipeline(
+        file_bytes,
+        {},
+        _StubVisualClassifier(),
+        _StubDeepfakeClassifier(),
+        filename="tiny.png",
+        hash_registry=invalid_sentinel,
+    )
+    assert result["hash"]["status"] == HashLookupStatus.INVALID_REGISTRY.value
+    assert result["hash"]["sha256"] == expected_digest
+    assert result["hash"]["registry_path"] == str(bad_path)
+    assert result["hash"]["error_details"]  # diagnostic preserved
+
+    # 2) Unavailable-registry sentinel — same digest surfaces, status
+    # stays REGISTRY_UNAVAILABLE. Never a NO_MATCH.
+    unavail_sentinel = unavailable_result(path=None, reason="env var unset")
+    result = app_mod.run_analysis_pipeline(
+        file_bytes,
+        {},
+        _StubVisualClassifier(),
+        _StubDeepfakeClassifier(),
+        filename="tiny.png",
+        hash_registry=unavail_sentinel,
+    )
+    assert result["hash"]["status"] == HashLookupStatus.REGISTRY_UNAVAILABLE.value
+    assert result["hash"]["sha256"] == expected_digest
+    assert result["hash"]["match"] is None
+
+
+def test_valid_empty_registry_produces_no_match(monkeypatch, tmp_path):
+    """A valid but empty registry is NOT unavailable — it must produce
+    a proper NO_MATCH result so the operator can distinguish 'nothing
+    registered yet' from 'no registry file'."""
+    import numpy as np
+    from src.genai_detection.hash_module import HashLookupStatus, HashRegistry
+
+    monkeypatch.setattr(
+        app_mod,
+        "compute_occlusion_saliency",
+        lambda detector, image, patch_size, stride: np.zeros(image.size[::-1], dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_overlay_heatmap",
+        lambda img_np, sal, alpha=0.5, cmap="hot": img_np.astype(np.float32) / 255.0,
+    )
+
+    registry_path = tmp_path / "empty.json"
+    registry_path.write_text('{"records": []}')
+    registry = HashRegistry(registry_path)
+
+    file_bytes = _tiny_png_bytes()
+    result = app_mod.run_analysis_pipeline(
+        file_bytes,
+        {},
+        _StubVisualClassifier(),
+        _StubDeepfakeClassifier(),
+        filename="tiny.png",
+        hash_registry=registry,
+    )
+    assert result["hash"]["status"] == HashLookupStatus.NO_MATCH.value
+    assert result["hash"]["registry_available"] is True
+    assert result["hash"]["sha256"] == sha256_bytes(file_bytes)
+
+
+def test_negative_verdict_is_inconclusive_not_likely_real(monkeypatch):
+    """Task 4 regression: the pipeline must NOT emit 'Likely Real' when
+    the fused decision is below threshold; it must be flagged
+    inconclusive and never rebrand `1 - P(AI)` as "real confidence"."""
+    import numpy as np
+
+    monkeypatch.setattr(
+        app_mod,
+        "compute_occlusion_saliency",
+        lambda detector, image, patch_size, stride: np.zeros(image.size[::-1], dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "_overlay_heatmap",
+        lambda img_np, sal, alpha=0.5, cmap="hot": img_np.astype(np.float32) / 255.0,
+    )
+
+    file_bytes = _tiny_png_bytes()
+    result = app_mod.run_analysis_pipeline(
+        file_bytes, {}, _StubVisualClassifier(), _StubDeepfakeClassifier(), filename="tiny.png"
+    )
+    assert result["verdict_type"] == "inconclusive"
+    assert "Likely Real" not in result["verdict"]
+    assert "inconclusive" in result["verdict"].lower()
+    assert "real confidence" not in result["verdict"].lower()
+
+
 def test_pipeline_cleans_up_exiftool_tempfile(monkeypatch):
     """run_analysis_pipeline unlinks its ExifTool temp file even when the
     metadata module raises (ExifTool not installed on this box, malformed
