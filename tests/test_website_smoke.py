@@ -52,11 +52,24 @@ class _StubFaceDetector:
 
 
 class _StubVisualClassifier:
+    """A confident-'real' stub used to drive the pipeline below the fused
+    decision threshold in the smoke tests.
+
+    Historically returned P(AI) = 0.10, which was well below the 0.55
+    threshold in force until 2026-09-06. After the threshold was lowered
+    to 0.16 (see `config.py` docstring and `outputs/visual_classifier_threshold_sweep/`),
+    P(AI) = 0.10 fuses to ~0.198 with a neutral (0.5) metadata score,
+    which clears 0.16 and rebrands these tests' expected inconclusive
+    outcome as "AI-generated" — breaking their intent. The stub therefore
+    now emits P(AI) = 0.02, which fuses to ~0.137 and stays safely below
+    the current 0.16 canonical threshold.
+    """
+
     def predict(self, image):
         return {
             "prediction": "Real",
-            "confidence": 0.9,
-            "all_scores": {"Real": 0.9, "AI-generated": 0.1},
+            "confidence": 0.98,
+            "all_scores": {"Real": 0.98, "AI-generated": 0.02},
         }
 
 

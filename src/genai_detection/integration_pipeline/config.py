@@ -4,11 +4,28 @@ Live configuration for the integration pipeline (web app / demo).
 One place for the fusion weights, accuracy scalars and decision thresholds
 so the entry points stop drifting apart (GAPS.md #2).
 
-Canonical values, confirmed by David on 2026-07-19:
-  - fused decision threshold = 0.55 (the 0.25 previously in app.py was a
-    temporary testing value from when the visual classifier was mispaired
-    with its base model; the report's §3.4 prints 0.5 — report 0.55 in the
-    thesis write-up)
+Canonical values, confirmed by David on 2026-07-19, updated 2026-09-06:
+  - fused decision threshold = **0.16** (David, 2026-09-06). Lowered from
+    0.55 after the visual-classifier threshold sweep at
+    `outputs/visual_classifier_threshold_sweep/` showed that CF-384's
+    sigmoid output is calibrated conservatively: at 0.55 the model
+    achieves in-distribution recall 0.570 (F1 0.695, AUC 0.861 on n=200
+    from `combined_dataset/test`) and out-of-distribution recall 0.890
+    (F1 0.932, AUC 0.993 on n=200 across 20 CF-eval generators). A
+    fine-grained sweep of 0.10 → 0.20 in 0.01 steps identified **0.16**
+    as the dual-cohort optimum on all three aggregate criteria (avg
+    Youden's J 0.735, avg F1 0.850, avg accuracy 0.868) — see
+    `outputs/visual_classifier_threshold_sweep/` for the coarse grid and
+    the fine-sweep log. At 0.16: in-distribution acc 0.770 / F1 0.736 /
+    Youden's J 0.540; out-of-distribution acc 0.965 / F1 0.964 /
+    Youden's J 0.930. Historical 0.55 values (canonical David 2026-07-19)
+    are retained verbatim in the older evaluation JSONs under
+    `src/genai_detection/visual_module/outputs/` and in the historical
+    E1 archive at `outputs/robustness_visual_classifier_thr055_historical/`
+    — do not delete or rerun those, they are the paper trail. The 0.25
+    previously in app.py was a temporary testing value from when the
+    visual classifier was mispaired with its base model; the placement
+    report's §3.4 prints 0.5; the earlier 0.55 stood until 2026-09-06.
 
 Canonical visual backbone, changed by David on 2026-08-12:
   - visual model = OwensLab/commfor-model-384 (official Community Forensics
@@ -43,7 +60,7 @@ W_META = 0.30            # w_m — importance of the metadata stream
 W_VISUAL = 0.70          # w_v — importance of the visual stream
 META_ACCURACY = 0.70     # a_m — reliability scalar for metadata
 VISUAL_ACCURACY = 0.9311  # a_v — commfor-384 mAcc, run_07 CF eval (David, 2026-08-12)
-WA_DECISION_THRESHOLD = 0.55  # canonical (David, 2026-07-19)
+WA_DECISION_THRESHOLD = 0.16  # canonical (David, 2026-09-06 — was 0.55; 0.16 = dual-cohort optimum from fine 0.10→0.20 sweep)
 
 # --- Conservative threshold fusion (experimental AND-gate) ---------------
 CT_META_THRESHOLD = 0.70
